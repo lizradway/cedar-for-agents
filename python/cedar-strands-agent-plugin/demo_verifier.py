@@ -4,7 +4,7 @@ The verifier generates a Cedar schema from tool definitions and validates
 policies against it. No model or agent runtime needed.
 """
 
-from cedar_auth_plugin import CedarPolicyVerifier
+from cedar_policy_verifier import CedarPolicyVerifier
 
 # -- Tool definitions (same format as Strands inputSchema["json"]) ----------
 

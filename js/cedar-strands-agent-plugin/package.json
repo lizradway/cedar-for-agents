@@ -5,7 +5,8 @@
   "scripts": {
     "build": "tsc",
     "demo": "tsx demo.ts",
-    "demo:saas": "tsx demo_saas.ts"
+    "demo:saas": "tsx demo_saas.ts",
+    "demo:verifier": "tsx demo_verifier.ts"
   },
   "dependencies": {
     "@cedar-policy/cedar-wasm": "^4.9.1",
