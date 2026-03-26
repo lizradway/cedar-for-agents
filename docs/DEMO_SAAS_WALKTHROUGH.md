@@ -7,11 +7,6 @@
     - [What This Demonstrates](#what-this-demonstrates)
     - [Why Not Just Use Database Permissions?](#why-not-just-use-database-permissions)
   - [The Demo](#the-demo)
-    - [Admin](#admin)
-    - [Analyst](#analyst)
-    - [Viewer](#viewer)
-    - [Unknown User (No Roles)](#unknown-user-no-roles)
-    - [Rate Limits (export\_csv, max 3/session)](#rate-limits-export_csv-max-3session)
 
 ## The Problem: Shared Agents, Different Users, Same Credentials
 
@@ -79,7 +74,7 @@ The demo uses dummy tool implementations (they return strings instead of hitting
 <details>
 <summary><h2>Appendix A: Demo Scenarios</h2></summary>
 
-### Admin
+**Admin**
 
 | Scenario | Expected | Why |
 |---|---|---|
@@ -91,7 +86,7 @@ The demo uses dummy tool implementations (they return strings instead of hitting
 
 The "admin queries secrets" scenario is the most important. The admin has `tools=["*"]` — wildcard access. But the global `.restrict("query_database", allowed_values={"database": ["analytics", "reporting", "production", "staging"]})` creates a `forbid` policy that applies to all principals. In Cedar, `forbid` always overrides `permit`. This is how you express "no one should ever do X" in a system where some users have wildcard access.
 
-### Analyst
+**Analyst**
 
 | Scenario | Expected | Why |
 |---|---|---|
@@ -103,7 +98,7 @@ The "admin queries secrets" scenario is the most important. The admin has `tools
 
 The "analyst queries production" scenario shows argument-level restrictions. The analyst has `query_database` in their tool list — but the `.restrict("query_database", allowed_values={"database": ["analytics", "reporting"]}, for_role="analyst")` policy checks the `database` argument. Passing `database="production"` triggers the `forbid`. The tool call is blocked before the SQL executes.
 
-### Viewer
+**Viewer**
 
 | Scenario | Expected | Why |
 |---|---|---|
@@ -112,13 +107,13 @@ The "analyst queries production" scenario shows argument-level restrictions. The
 | Query a database | DENIED | `query_database` not in viewer's tool list |
 | Export data | DENIED | `export_csv` not in viewer's tool list |
 
-### Unknown User (No Roles)
+**Unknown User (No Roles)**
 
 | Scenario | Expected | Why |
 |---|---|---|
 | Search dashboards | DENIED | No roles = no permits = no access |
 
-### Rate Limits (export_csv, max 3/session)
+**Rate Limits** (export_csv, max 3/session)
 
 | Call | Expected | Why |
 |---|---|---|
