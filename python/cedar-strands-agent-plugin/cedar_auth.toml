@@ -1,0 +1,31 @@
+# Cedar authorization config for an autonomous coding agent.
+#
+# This file defines the entire authorization policy — no Python config needed.
+# Just: plugin = CedarAuthPlugin.from_config("cedar_auth.toml")
+
+[principal]
+key = "user_id"
+type = "User"
+
+[roles]
+maintainer = ["*"]
+contributor = ["comment_on_issue", "review_pr", "list_issues"]
+ci_bot = ["run_checks", "comment_on_issue"]
+
+[resources.close_issue]
+key = "issue_number"
+type = "Issue"
+
+[restrictions.use_github]
+for_role = "contributor"
+query_type = ["query"]
+
+[rate_limits]
+comment_on_issue = 5
+
+[time_window]
+start = 9
+end = 17
+
+[deny_in_env.protected]
+tools = ["force_push", "delete_branch"]
