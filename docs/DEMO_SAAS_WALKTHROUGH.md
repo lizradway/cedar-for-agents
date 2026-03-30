@@ -62,7 +62,7 @@ Cedar operates at the *application layer* — one level above the database. It c
 ## The Demo
 
 ```bash
-cd python/cedar-strands-agent-plugin
+cd python/strands-cedar-auth
 pip install cedarpy strands-agents
 python demo_saas.py
 ```

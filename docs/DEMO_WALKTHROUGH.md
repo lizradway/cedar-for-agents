@@ -57,7 +57,7 @@ Embedding permission checks inside tool code doesn't scale: forgetting a check m
 The demo (`demo.py`) creates a Strands agent with the same tools that strands-coder uses, then runs scenarios showing how Cedar enforces boundaries that prompt instructions alone cannot. Every tool call is intercepted by the Cedar plugin *before execution* — the LLM never gets a chance to run a forbidden tool. (See [Appendix F](#appendix-f-demo-scenarios-by-role) for the full scenario list and [Appendix G](#appendix-g-generated-cedar-policies) for the generated policies.)
 
 ```bash
-cd python/cedar-strands-agent-plugin
+cd python/strands-cedar-auth
 pip install cedarpy strands-agents
 python demo.py
 ```
