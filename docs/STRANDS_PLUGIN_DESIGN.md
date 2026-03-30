@@ -477,7 +477,8 @@ The plugin belongs in the [`cedar-for-agents`](https://github.com/cedar-policy/c
 
 All demos run with `pip install cedarpy strands-agents`. See [Appendix A](#appendix-a-implementation-files) for the full file listing and test output.
 
-## Appendix A: Implementation Files
+<details>
+<summary><strong>Appendix A: Implementation Files</strong></summary>
 
 | File | What it does | How to run |
 |------|-------------|------------|
@@ -489,7 +490,10 @@ All demos run with `pip install cedarpy strands-agents`. See [Appendix A](#appen
 | `cedar_auth.toml` | Example TOML config file for `from_config()`. | (config, not runnable) |
 | `demo.py` | Full end-to-end with real Agent + model. 8 cases. Needs model provider. | `python demo.py` |
 
-## Appendix B: Test Output
+</details>
+
+<details>
+<summary><strong>Appendix B: Test Output</strong></summary>
 
 **`demo_builder.py` output (all 21 test cases pass):**
 ```
@@ -520,7 +524,10 @@ search in prod: allowed (not in deny list)              ALLOW      ALLOW
 Result: ALL PASSED
 ```
 
-## Appendix C: Key Design Decisions
+</details>
+
+<details>
+<summary><strong>Appendix C: Key Design Decisions</strong></summary>
 
 - **Three entry points**: Builder (common constraints) → Config file (TOML/JSON-driven) → full Cedar (anything). Each entry point generates Cedar under the hood, so policies are always auditable.
 - **Builder generates Cedar policies**: Each `.restrict()`, `.rate_limit()`, `.time_window()`, `.deny_tools_in_env()` call generates the corresponding `forbid(...)` Cedar policy. The customer never writes Cedar syntax, but it's all Cedar underneath.
@@ -531,7 +538,10 @@ Result: ALL PASSED
 - **Structured audit log**: Every authorization decision is recorded as an `AuthzDecision` dataclass with fields: `principal`, `action`, `resource`, `allowed`, `tool_name`, and `timestamp`. Accessible via the `plugin.audit_log` property.
 - **Customizable resource resolution**: The `resource_resolver` parameter accepts a declarative dict (`{"delete_record": {"key": "record_id", "type": "Record"}}`), a JSON/TOML file path, or a callable `(tool_name, tool_input) -> str`. The dict format scales per-tool without growing if/else chains. Tools not in the mapping fall back to `Tool::"tool_name"`.
 
-## Appendix D: How Other Frameworks Handle Identity
+</details>
+
+<details>
+<summary><strong>Appendix D: How Other Frameworks Handle Identity</strong></summary>
 
 | Framework | Identity mechanism | Tool-level auth? |
 |-----------|-------------------|-----------------|
@@ -540,7 +550,10 @@ Result: ALL PASSED
 | **CrewAI** | Nothing for tool execution. Has A2A inter-agent auth (OAuth, OIDC, mTLS) for agents talking to other agents. | No. User identity doesn't reach tool calls. |
 | **AutoGen** | Nothing in core. Web UI (AutoGen Studio) has login middleware that doesn't reach agent execution. | No. |
 
-## Appendix E: Runtime Condition Examples
+</details>
+
+<details>
+<summary><strong>Appendix E: Runtime Condition Examples</strong></summary>
 
 Cedar is **stateless** — it evaluates a single authorization request and returns Allow or Deny. For runtime conditions, the **plugin** gathers state and passes it as context. Cedar evaluates the policy against that context. The split is: plugin gathers facts, Cedar makes the decision.
 
@@ -622,7 +635,10 @@ Cedar does **not** implement the approval workflow — it doesn't pause executio
 
 **Summary of the pattern**: Plugin gathers runtime state → passes it as Cedar context → Cedar evaluates → returns Allow/Deny. For simple context (time, environment flags), this is clean. For stateful context (counters, approval status), the plugin carries more weight and Cedar's role is primarily making thresholds configurable via policy.
 
-## Appendix F: Comparison with Existing Control Plugins
+</details>
+
+<details>
+<summary><strong>Appendix F: Comparison with Existing Control Plugins</strong></summary>
 
 | | Strands Steering | Galileo / Datadog Guardrails | Cedar Auth Plugin |
 |-|-----------------|---------------------------|-------------------|
@@ -637,7 +653,10 @@ Cedar does **not** implement the approval workflow — it doesn't pause executio
 
 A production agent might use all three: Cedar to enforce *"can this user do this?"* before the tool runs, steering to ensure *"is the agent doing this correctly?"* during execution, and a guardrail platform to evaluate *"was the output safe?"* after the model responds.
 
-## Appendix G: Tool-Set Swapping vs. Cedar
+</details>
+
+<details>
+<summary><strong>Appendix G: Tool-Set Swapping vs. Cedar</strong></summary>
 
 | | Tool-set swapping | Cedar |
 |-|-------------------|-------|
@@ -650,7 +669,10 @@ A production agent might use all three: Cedar to enforce *"can this user do this
 | Static analysis of permission set | No | Yes (automated reasoning) |
 | Multi-agent permission propagation | No | Yes (principal follows the user) |
 
-## Appendix H: Resource Resolver Formats
+</details>
+
+<details>
+<summary><strong>Appendix H: Resource Resolver Formats</strong></summary>
 
 The `resource_resolver` parameter accepts four formats. Tools not in the mapping fall back to `Tool::"tool_name"`.
 
@@ -714,7 +736,10 @@ permit (principal, action == Action::"use_tool::delete_record", resource)
 when { resource.owner == principal };
 ```
 
-## Appendix I: Verifier API and CI/CD Integration
+</details>
+
+<details>
+<summary><strong>Appendix I: Verifier API and CI/CD Integration</strong></summary>
 
 The verifier follows the same builder pattern as the plugin itself:
 
@@ -767,7 +792,10 @@ cedar-strands verify \
 
 The verifier is most useful when paired with the auto-generated schema. A CI pipeline can import the agent's tool definitions, auto-generate the Cedar schema, validate policies against it, and run reachability/completeness checks. This catches a common failure mode: a developer adds a new tool but forgets to write a policy for it.
 
-## Appendix J: Full Cedar Examples
+</details>
+
+<details>
+<summary><strong>Appendix J: Full Cedar Examples</strong></summary>
 
 **Loading from files:**
 
@@ -836,7 +864,10 @@ agent = Agent(plugins=[plugin], tools=[...])
 agent("terminate instance i-abc123", invocation_state={"user_id": "alice@acme.com"})
 ```
 
-## Appendix K: Cedar vs. OPA
+</details>
+
+<details>
+<summary><strong>Appendix K: Cedar vs. OPA</strong></summary>
 
 OPA (Open Policy Agent) with Rego is the most widely adopted policy engine — battle-tested, Kubernetes-native, huge ecosystem. It's the obvious alternative.
 
@@ -854,7 +885,10 @@ OPA (Open Policy Agent) with Rego is the most widely adopted policy engine — b
 
 **Would we build an OPA plugin?** The plugin architecture (hook into `BeforeToolCallEvent`, evaluate policy, cancel on deny) is engine-agnostic. An `OpaAuthPlugin` would replace Cedar evaluation with OPA/WASM evaluation and Rego policies. The main loss would be formal verification and the builder's ability to generate statically analyzable policies. We'd welcome it as a community contribution or build it ourselves if there's demand.
 
-## Appendix L: Cedar Model Mapping
+</details>
+
+<details>
+<summary><strong>Appendix L: Cedar Model Mapping</strong></summary>
 
 Strands concepts map onto Cedar's authorization model:
 
@@ -901,7 +935,10 @@ forbid (
 };
 ```
 
-## Appendix M: Builder-to-Cedar Mapping
+</details>
+
+<details>
+<summary><strong>Appendix M: Builder-to-Cedar Mapping</strong></summary>
 
 | Builder method | Generated Cedar |
 |---------------|----------------|
@@ -912,3 +949,5 @@ forbid (
 | `.rate_limit("send_email", max_per_session=3)` | `forbid (...) when { context.session_call_count >= 3 };` (plugin tracks counter, passes it as context) |
 | `.time_window(9, 17)` | `forbid (...) when { context.hour_utc < 9 \|\| context.hour_utc >= 17 };` |
 | `.deny_tools_in_env("production", [...])` | `forbid (...) when { context.environment == "production" };` |
+
+</details>
