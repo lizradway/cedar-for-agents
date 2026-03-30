@@ -16,7 +16,6 @@
   - [Config file (`from_config`)](#config-file-from_config)
   - [Full Cedar (advanced)](#full-cedar-advanced)
 - [Implementation](#implementation)
-- [Open Questions](#open-questions)
 - Appendices: [A (Files)](#appendix-a-implementation-files) · [B (Tests)](#appendix-b-test-output) · [C (Design Decisions)](#appendix-c-key-design-decisions) · [D (Framework Identity)](#appendix-d-how-other-frameworks-handle-identity) · [E (Runtime Conditions)](#appendix-e-runtime-condition-examples) · [F (Control Plugins)](#appendix-f-comparison-with-existing-control-plugins) · [G (Tool-Set Swapping)](#appendix-g-tool-set-swapping-vs-cedar) · [H (Resource Resolver)](#appendix-h-resource-resolver-formats) · [I (Verifier/CI)](#appendix-i-verifier-api-and-cicd-integration) · [J (Full Cedar)](#appendix-j-full-cedar-examples) · [K (Cedar vs. OPA)](#appendix-k-cedar-vs-opa) · [L (Model Mapping)](#appendix-l-cedar-model-mapping) · [M (Builder→Cedar)](#appendix-m-builder-to-cedar-mapping)
 
 ## Definitions
@@ -477,20 +476,6 @@ See [Appendix J](#appendix-j-full-cedar-examples) for detailed examples of file 
 The plugin belongs in the [`cedar-for-agents`](https://github.com/cedar-policy/cedar-for-agents) repo as `python/strands-cedar-auth/`. The repo exists for "software at the intersection of Cedar and agents" — today it has MCP-focused Rust and JS packages; this adds runtime authorization for a Python agent framework. The package is installable standalone (`pip install strands-cedar-auth`) and depends on `cedarpy` and `strands-agents`.
 
 All demos run with `pip install cedarpy strands-agents`. See [Appendix A](#appendix-a-implementation-files) for the full file listing and test output.
-
-## Open Questions
-
-1. **Resource granularity**: Resolved. The default resource is `Tool::"tool_name"`. For domain-specific resources, the `resource_resolver` parameter accepts a declarative dict, a JSON/TOML config file, or a callable. See "How the Authorization Request Is Built" → "Resource" for details.
-
-2. **Entity provider pattern**: For dynamic entity stores (e.g., user roles from a database), the plugin needs an async-capable entity provider interface. What should the contract look like?
-
-3. **Multi-agent**: In swarm/graph multi-agent setups, should each sub-agent carry its own policy set, or should policies be evaluated at the orchestrator level? Cedar's action hierarchy (`Action::"use_tool"` as parent of all tool actions) makes top-level policies composable with agent-specific ones.
-
-4. **Verified Permissions integration**: Deferred. AVP adoption for agent authorization is early-stage. The plugin architecture (single evaluation point in `before_tool_call`) makes it straightforward to introduce a pluggable `Authorizer` backend later. In the meantime, the config file and Full Cedar approaches already support cloud-hosted permissions by storing `.toml`, `.json`, or `.cedar` files in S3 or a config service — a practical stepping stone to centralized management without AVP's full infrastructure. See "How to choose" for details.
-
-5. **Schema auto-generation**: Should the plugin auto-generate a Cedar schema from `agent.tools` at startup? This would enable Cedar's validator to catch policy errors at deploy time (e.g., referencing a tool that doesn't exist). The `cedar-policy-mcp-schema-generator` does this for MCP; the same approach applies to Strands tool type hints.
-
----
 
 ## Appendix A: Implementation Files
 
