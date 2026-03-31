@@ -1,4 +1,4 @@
-# Cedar Authorization Plugin for Strands Agents SDK (Python)
+# Cedar Authorization Plugin for Strands Agents SDK
 
 ## Table of Contents
 
