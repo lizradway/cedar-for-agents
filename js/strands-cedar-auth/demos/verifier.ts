@@ -5,7 +5,7 @@
  * policies against it. No model or agent runtime needed.
  */
 
-import { CedarPolicyVerifier, type VerificationResult } from "./cedar_policy_verifier.js";
+import { CedarPolicyVerifier, type VerificationResult } from "../cedar_policy_verifier.js";
 
 // -- Tool definitions (same format as JSON Schema) ----------
 

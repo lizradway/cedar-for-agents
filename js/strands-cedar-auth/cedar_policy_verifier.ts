@@ -61,6 +61,22 @@ export class CedarPolicyVerifier {
     this._resourceTypes = opts?.resourceTypes ?? ["Tool"];
   }
 
+  /**
+   * Create a verifier from a Strands Agent instance.
+   *
+   * Extracts tool names and input schemas from agent.toolRegistry.
+   */
+  static fromAgent(
+    agent: { toolRegistry: { list(): Array<{ name: string; toolSpec: { inputSchema?: JsonSchema } }> } },
+    opts?: { principalTypes?: string[]; resourceTypes?: string[] },
+  ): CedarPolicyVerifier {
+    const tools: Record<string, JsonSchema> = {};
+    for (const tool of agent.toolRegistry.list()) {
+      tools[tool.name] = tool.toolSpec.inputSchema ?? {};
+    }
+    return new CedarPolicyVerifier(tools, opts);
+  }
+
   generateSchema(): string {
     const lines: string[] = [];
 

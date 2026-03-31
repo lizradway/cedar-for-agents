@@ -13,7 +13,7 @@ if (!globalThis.crypto) (globalThis as any).crypto = crypto;
 
 import { Agent, tool } from "@strands-agents/sdk";
 import { z } from "zod";
-import { CedarAuthPlugin } from "./cedar_auth_plugin.js";
+import { CedarAuthPlugin } from "../cedar_auth_plugin.js";
 
 // ---------------------------------------------------------------------------
 // 1. Build the plugin
