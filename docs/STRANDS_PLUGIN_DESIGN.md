@@ -16,9 +16,10 @@
   - [Config file (`from_config`)](#config-file-from_config)
   - [Full Cedar (advanced)](#full-cedar-advanced)
 - [Implementation](#implementation)
-- Appendices: [A (Files)](#appendix-a-implementation-files) · [B (Tests)](#appendix-b-test-output) · [C (Design Decisions)](#appendix-c-key-design-decisions) · [D (Framework Identity)](#appendix-d-how-other-frameworks-handle-identity) · [E (Runtime Conditions)](#appendix-e-runtime-condition-examples) · [F (Control Plugins)](#appendix-f-comparison-with-existing-control-plugins) · [G (Tool-Set Swapping)](#appendix-g-tool-set-swapping-vs-cedar) · [H (Resource Resolver)](#appendix-h-resource-resolver-formats) · [I (Verifier/CI)](#appendix-i-verifier-api-and-cicd-integration) · [J (Full Cedar)](#appendix-j-full-cedar-examples) · [K (Cedar vs. OPA)](#appendix-k-cedar-vs-opa) · [L (Model Mapping)](#appendix-l-cedar-model-mapping) · [M (Builder→Cedar)](#appendix-m-builder-to-cedar-mapping)
+- Appendices: [A (Design Decisions)](#appendix-a-key-design-decisions) · [B (Framework Identity)](#appendix-b-how-other-frameworks-handle-identity) · [C (Runtime Conditions)](#appendix-c-runtime-condition-examples) · [D (Control Plugins)](#appendix-d-comparison-with-existing-control-plugins) · [E (Tool-Set Swapping)](#appendix-e-tool-set-swapping-vs-cedar) · [F (Resource Resolver)](#appendix-f-resource-resolver-formats) · [G (Verifier/CI)](#appendix-g-verifier-api-and-cicd-integration) · [H (Full Cedar)](#appendix-h-full-cedar-examples) · [I (Cedar vs. OPA)](#appendix-i-cedar-vs-opa) · [J (Model Mapping)](#appendix-j-cedar-model-mapping) · [K (Builder→Cedar)](#appendix-k-builder-to-cedar-mapping)
 
-## Definitions
+<details>
+<summary><strong>Definitions</strong></summary>
 
 | Term | Definition |
 |------|-----------|
@@ -36,6 +37,8 @@
 | **`cedarpy`** | Rust-backed Python bindings for Cedar policy evaluation. Provides in-process, zero-network, microsecond-latency policy evaluation. |
 | **Principal** | In Cedar, the entity performing the action — typically the end user, but can also be a service, IAM role, or agent. |
 | **MCP** | Model Context Protocol — a standard for describing tools that AI models can call. The `cedar-for-agents` repo includes MCP-focused schema generation. |
+
+</details>
 
 
 ## Problem
@@ -80,7 +83,7 @@ With Cedar, the model sees all tools, attempts the call, gets a structured denia
 
 Some authorization decisions depend on context that only exists at the moment of the tool call — time of day, environment flags, rate limits, approval status. Tool-set swapping can't handle these because the agent is already constructed.
 
-Cedar evaluates these as `when` clauses on context passed in by the plugin: `context.hour_utc < 9`, `context.session_call_count >= 10`, `context.deploy_freeze == true`. The plugin gathers the runtime state; Cedar makes the decision. See [Appendix E](#appendix-e-runtime-condition-examples) for detailed examples of time-based, environment-based, rate-based, and approval-based conditions.
+Cedar evaluates these as `when` clauses on context passed in by the plugin: `context.hour_utc < 9`, `context.session_call_count >= 10`, `context.deploy_freeze == true`. The plugin gathers the runtime state; Cedar makes the decision. See [Appendix C](#appendix-c-runtime-condition-examples) for detailed examples of time-based, environment-based, rate-based, and approval-based conditions.
 
 #### 4. Separation of concerns — who owns permissions?
 
@@ -117,7 +120,7 @@ permit (
 
 This works regardless of which agent in the chain actually calls the tool — the policy follows the user, not the agent.
 
-See [Appendix G](#appendix-g-tool-set-swapping-vs-cedar) for a side-by-side comparison table. **The rule of thumb**: If your permission model is "role X gets tools A, B, C" and nothing more, use tool-set swapping. If you need argument-level gating, runtime conditions, static analysis, or multi-agent permission propagation, you need a policy engine.
+See [Appendix E](#appendix-e-tool-set-swapping-vs-cedar) for a side-by-side comparison table. **The rule of thumb**: If your permission model is "role X gets tools A, B, C" and nothing more, use tool-set swapping. If you need argument-level gating, runtime conditions, static analysis, or multi-agent permission propagation, you need a policy engine.
 
 ### Why Not Just Use IAM / Application-Layer Auth?
 
@@ -179,7 +182,7 @@ Without it, you have two choices:
 
 #### How this differs from existing control plugins
 
-Strands steering plugins and external guardrails (Galileo Agent Control, Datadog) can enforce operational constraints like rate limits and argument validation — but they are **not identity-aware**. They apply the same rules to every user. Agent Control can say "max 5 `send_email` calls," but not "admins get 10, analysts get 3." It can block certain argument values, but not "Alice can query production, Bob can only query analytics." Cedar policies are written in terms of *principals* — the same constraint varies by who's calling. Cedar is the only layer that composes all three dimensions — identity, tool-level granularity, and conditional constraints — in one declarative, statically analyzable policy. Guardrails and steering are complementary layers, not alternatives. See [Appendix F](#appendix-f-comparison-with-existing-control-plugins) for the full comparison.
+Strands steering plugins and external guardrails (Galileo Agent Control, Datadog) can enforce operational constraints like rate limits and argument validation — but they are **not identity-aware**. They apply the same rules to every user. Agent Control can say "max 5 `send_email` calls," but not "admins get 10, analysts get 3." It can block certain argument values, but not "Alice can query production, Bob can only query analytics." Cedar policies are written in terms of *principals* — the same constraint varies by who's calling. Cedar is the only layer that composes all three dimensions — identity, tool-level granularity, and conditional constraints — in one declarative, statically analyzable policy. Guardrails and steering are complementary layers, not alternatives. See [Appendix D](#appendix-d-comparison-with-existing-control-plugins) for the full comparison.
 
 #### When you don't need this
 
@@ -207,7 +210,7 @@ Because Strands plugins auto-register hooks via the `@hook` decorator, no change
 
 #### Identity
 
-Strands agents accept an `invocation_state` dict on every call. Today it carries only framework internals — there is no `user_id`, `principal`, or `roles`. The dict is caller-extensible, so the plugin uses it to carry identity without any SDK changes. No agentic SDK has built-in tool-level authorization today ([Appendix D](#appendix-d-how-other-frameworks-handle-identity)); authorization is inherently opinionated, so it lives in an optional plugin.
+Strands agents accept an `invocation_state` dict on every call. Today it carries only framework internals — there is no `user_id`, `principal`, or `roles`. The dict is caller-extensible, so the plugin uses it to carry identity without any SDK changes. No agentic SDK has built-in tool-level authorization today ([Appendix B](#appendix-b-how-other-frameworks-handle-identity)); authorization is inherently opinionated, so it lives in an optional plugin.
 
 **How identity flows in:** Strands is a library, not a server. Your application authenticates users and passes identity into `invocation_state`:
 
@@ -237,13 +240,13 @@ The plugin reads `event.invocation_state` inside `BeforeToolCallEvent`, construc
 
 #### Why Cedar
 
-Cedar is purpose-built for authorization — `principal`, `action`, `resource`, and `context` are language primitives, not conventions. It provides formal verification (prove policy properties mathematically), bounded-latency evaluation (no recursion, no loops), and a natural path to AWS-managed authorization via Amazon Verified Permissions. We evaluated OPA/Rego as the main alternative; see [Appendix K](#appendix-k-cedar-vs-opa) for the full comparison. The plugin architecture is engine-agnostic, so an OPA plugin is feasible as a community contribution or something we build ourselves if there's demand.
+Cedar is purpose-built for authorization — `principal`, `action`, `resource`, and `context` are language primitives, not conventions. It provides formal verification (prove policy properties mathematically), bounded-latency evaluation (no recursion, no loops), and a natural path to AWS-managed authorization via Amazon Verified Permissions. We evaluated OPA/Rego as the main alternative; see [Appendix I](#appendix-i-cedar-vs-opa) for the full comparison. The plugin architecture is engine-agnostic, so an OPA plugin is feasible as a community contribution or something we build ourselves if there's demand.
 
-The plugin evaluates policies locally via `cedarpy` (Rust-backed Python bindings) — in-process, zero-network, microsecond latency. Cedar's Rust core also compiles to WASM natively, so policies are directly portable to a TypeScript/WASM runtime.
+The plugin evaluates policies locally via `cedarpy` (Rust-backed Python bindings) — in-process, zero-network, microsecond latency. Cedar's Rust core also compiles to WASM natively, so policies are directly portable to a TypeScript/WASM runtime. For future dynamic entity/policy loading (e.g., fetching from S3 or a database at evaluation time), [`cedar-local-agent`](https://github.com/cedar-policy/cedar-local-agent) provides a Rust crate with async pluggable provider traits and caching — a natural building block if we outgrow static policy loading.
 
 #### Authorization Request
 
-When the model calls a tool, the plugin intercepts the call in `BeforeToolCallEvent` and builds a Cedar authorization request with four parts: **principal**, **action**, **resource**, and **context**. Strands concepts map naturally onto Cedar's model — see [Appendix L](#appendix-l-cedar-model-mapping) for the full mapping table and example policies.
+When the model calls a tool, the plugin intercepts the call in `BeforeToolCallEvent` and builds a Cedar authorization request with four parts: **principal**, **action**, **resource**, and **context**. Strands concepts map naturally onto Cedar's model — see [Appendix J](#appendix-j-cedar-model-mapping) for the full mapping table and example policies.
 
 **Principal** — Who is asking. Built from `invocation_state` by the principal resolver (see Identity above).
 
@@ -259,7 +262,7 @@ tool call: query_database(database="analytics")
 → action = Action::"use_tool::query_database"
 ```
 
-**Resource** — What the tool is acting on. By default, this is the tool itself (`Tool::"query_database"`). This works when policies are about **which tools** a role can use — which is most cases. For policies that reference the **specific thing** a tool targets (a particular record, an S3 bucket), a custom `resource_resolver` extracts domain objects from tool arguments. Most users won't need this — it's a Full Cedar feature. See [Appendix H](#appendix-h-resource-resolver-formats) for all supported formats.
+**Resource** — What the tool is acting on. By default, this is the tool itself (`Tool::"query_database"`). This works when policies are about **which tools** a role can use — which is most cases. For policies that reference the **specific thing** a tool targets (a particular record, an S3 bucket), a custom `resource_resolver` extracts domain objects from tool arguments. Most users won't need this — it's a Full Cedar feature. See [Appendix F](#appendix-f-resource-resolver-formats) for all supported formats.
 
 **Context** — Everything Cedar needs to make conditional decisions. The plugin builds this from three sources:
 
@@ -315,7 +318,7 @@ Because Cedar policies are analyzable, the plugin exposes a **`CedarPolicyVerifi
 - **Completeness**: "Does every tool have at least one permit path?" — catches forgotten policies for new tools.
 - **Redundancy**: "Does policy X shadow policy Y?" — finds policies that have no effect.
 
-See [Appendix I](#appendix-i-verifier-api-and-cicd-integration) for the full verifier API and CI/CD examples.
+See [Appendix G](#appendix-g-verifier-api-and-cicd-integration) for the full verifier API and CI/CD examples.
 
 ## Developer API
 
@@ -390,7 +393,7 @@ agent("query the analytics db", invocation_state={
 })
 ```
 
-Each builder method generates the corresponding Cedar policy under the hood. The customer never writes Cedar, but it's all Cedar underneath — so the policies are auditable, analyzable, and composable. See [Appendix M](#appendix-m-builder-to-cedar-mapping) for what each method generates.
+Each builder method generates the corresponding Cedar policy under the hood. The customer never writes Cedar, but it's all Cedar underneath — so the policies are auditable, analyzable, and composable. See [Appendix K](#appendix-k-builder-to-cedar-mapping) for what each method generates.
 
 ### Config file (`from_config`)
 
@@ -469,70 +472,21 @@ my-agent/
 - **Custom `principal_resolver`** — accepts a dict `{"key": "iam_role", "type": "IamRole"}` (same format as the builder's `.principal()`) or a function for full control. The function form handles multi-field resolution, conditional types, or arbitrary logic.
 - **Custom `resource_resolver`** — extracts domain-specific resources from tool arguments (e.g., `Record::"42"` instead of `Tool::"delete_record"`). Accepts a declarative dict, a JSON/TOML file path, or a callable.
 
-See [Appendix J](#appendix-j-full-cedar-examples) for detailed examples of file loading, custom principal resolvers, and a full-featured configuration.
+See [Appendix H](#appendix-h-full-cedar-examples) for detailed examples of file loading, custom principal resolvers, and a full-featured configuration.
 
 ## Implementation
 
 The plugin belongs in the [`cedar-for-agents`](https://github.com/cedar-policy/cedar-for-agents) repo as `python/strands-cedar-auth/`. The repo exists for "software at the intersection of Cedar and agents" — today it has MCP-focused Rust and JS packages; this adds runtime authorization for a Python agent framework. The package is installable standalone (`pip install strands-cedar-auth`) and depends on `cedarpy` and `strands-agents`.
 
-All demos run with `pip install cedarpy strands-agents`. See [Appendix A](#appendix-a-implementation-files) for the full file listing and test output.
+All demos run with `pip install cedarpy strands-agents`. See [`DEMO_WALKTHROUGH.md`](./DEMO_WALKTHROUGH.md) and [`DEMO_SAAS_WALKTHROUGH.md`](./DEMO_SAAS_WALKTHROUGH.md) for worked examples.
 
 <details>
-<summary><strong>Appendix A: Implementation Files</strong></summary>
-
-| File | What it does | How to run |
-|------|-------------|------------|
-| `cedar_auth_plugin.py` | Plugin with three entry points: builder, `from_config`, and full Cedar. Includes `CedarAuthBuilder`, `CedarAuthPlugin`, and `AuthzDecision`. | (library, not runnable) |
-| `demo_simple.py` | Simple RBAC with the builder. 10 cases. No model needed. | `python demo_simple.py` |
-| `demo_builder.py` | Tests all builder helpers (RBAC, arg scoping, rate limits, time window, env denial). 21 cases. No model needed. | `python demo_builder.py` |
-| `demo_scoped_args_builder.py` | Same tool (`query_database`), different argument permissions per role using the builder's `for_role` parameter. 16 cases. No model needed. | `python demo_scoped_args_builder.py` |
-| `demo_config.py` | Config-driven plugin from `cedar_auth.toml`. Tests RBAC, restrictions, rate limits, time windows, env denials, and resource resolution. 17 cases. | `python demo_config.py` |
-| `cedar_auth.toml` | Example TOML config file for `from_config()`. | (config, not runnable) |
-| `demo.py` | Full end-to-end with real Agent + model. 8 cases. Needs model provider. | `python demo.py` |
-
-</details>
-
-<details>
-<summary><strong>Appendix B: Test Output</strong></summary>
-
-**`demo_builder.py` output (all 21 test cases pass):**
-```
-Test                                                    Expected   Actual
----------------------------------------------------------------------------
-admin can search                                        ALLOW      ALLOW
-admin can delete_record                                 ALLOW      ALLOW
-analyst can search                                      ALLOW      ALLOW
-analyst cannot delete_record                            DENY       DENY
-analyst: query_database(analytics) allowed              ALLOW      ALLOW
-analyst: query_database(reporting) allowed              ALLOW      ALLOW
-analyst: query_database(production) DENIED              DENY       DENY
-admin: query_database(production) also DENIED           DENY       DENY
-send_email call 1/3: allowed                            ALLOW      ALLOW
-send_email call 2/3: allowed                            ALLOW      ALLOW
-send_email call 3/3: allowed                            ALLOW      ALLOW
-send_email call 4/3: DENIED (rate limit)                DENY       DENY
-send_email different session: allowed                   ALLOW      ALLOW
-search at 12pm (in window): allowed                     ALLOW      ALLOW
-search at 3am (outside window): DENIED                  DENY       DENY
-search at 8am (before window): DENIED                   DENY       DENY
-search at 5pm (at boundary, >= 17): DENIED              DENY       DENY
-delete_record in dev: allowed (admin)                   ALLOW      ALLOW
-delete_record in prod: DENIED                           DENY       DENY
-drop_table in prod: DENIED                              DENY       DENY
-search in prod: allowed (not in deny list)              ALLOW      ALLOW
----------------------------------------------------------------------------
-Result: ALL PASSED
-```
-
-</details>
-
-<details>
-<summary><strong>Appendix C: Key Design Decisions</strong></summary>
+<summary><strong>Appendix A: Key Design Decisions</strong></summary>
 
 - **Three entry points**: Builder (common constraints) → Config file (TOML/JSON-driven) → full Cedar (anything). Each entry point generates Cedar under the hood, so policies are always auditable.
 - **Builder generates Cedar policies**: Each `.restrict()`, `.rate_limit()`, `.time_window()`, `.deny_tools_in_env()` call generates the corresponding `forbid(...)` Cedar policy. The customer never writes Cedar syntax, but it's all Cedar underneath.
 - **Plugin tracks stateful constraints**: Rate limits require counters. Cedar is stateless, so the plugin maintains call counts per session and passes the count as `context.session_call_count` into each Cedar evaluation. Cedar evaluates the threshold; the plugin manages the state. Session ID resolution falls back through `session_id` → `user_id` → `"_default"` (via `_get_session_id()`).
-- **`cancel_tool`**: On denial, the plugin sets `event.cancel_tool` with a human-readable message. The model sees this as a tool error and can explain the denial to the user (confirmed working in `demo.py` with a real model).
+- **`cancel_tool`**: On denial, the plugin sets `event.cancel_tool` with a human-readable message. The model sees this as a tool error and can explain the denial to the user (confirmed working in the autonomous-agent and SaaS demos with a real model).
 - **Action naming**: `Action::"use_tool::{tool_name}"` — one Cedar action per tool, auto-derived from the tool's name.
 - **Dynamic entities from `invocation_state`**: The `_dynamic_entities()` static method builds User entities from `invocation_state["user_id"]` and `invocation_state["roles"]` at runtime, with role membership expressed as parent relationships. No static entity JSON required for the simple/builder APIs.
 - **Structured audit log**: Every authorization decision is recorded as an `AuthzDecision` dataclass with fields: `principal`, `action`, `resource`, `allowed`, `tool_name`, and `timestamp`. Accessible via the `plugin.audit_log` property.
@@ -541,7 +495,7 @@ Result: ALL PASSED
 </details>
 
 <details>
-<summary><strong>Appendix D: How Other Frameworks Handle Identity</strong></summary>
+<summary><strong>Appendix B: How Other Frameworks Handle Identity</strong></summary>
 
 | Framework | Identity mechanism | Tool-level auth? |
 |-----------|-------------------|-----------------|
@@ -553,7 +507,7 @@ Result: ALL PASSED
 </details>
 
 <details>
-<summary><strong>Appendix E: Runtime Condition Examples</strong></summary>
+<summary><strong>Appendix C: Runtime Condition Examples</strong></summary>
 
 Cedar is **stateless** — it evaluates a single authorization request and returns Allow or Deny. For runtime conditions, the **plugin** gathers state and passes it as context. Cedar evaluates the policy against that context. The split is: plugin gathers facts, Cedar makes the decision.
 
@@ -638,7 +592,7 @@ Cedar does **not** implement the approval workflow — it doesn't pause executio
 </details>
 
 <details>
-<summary><strong>Appendix F: Comparison with Existing Control Plugins</strong></summary>
+<summary><strong>Appendix D: Comparison with Existing Control Plugins</strong></summary>
 
 | | Strands Steering | Galileo / Datadog Guardrails | Cedar Auth Plugin |
 |-|-----------------|---------------------------|-------------------|
@@ -656,7 +610,7 @@ A production agent might use all three: Cedar to enforce *"can this user do this
 </details>
 
 <details>
-<summary><strong>Appendix G: Tool-Set Swapping vs. Cedar</strong></summary>
+<summary><strong>Appendix E: Tool-Set Swapping vs. Cedar</strong></summary>
 
 | | Tool-set swapping | Cedar |
 |-|-------------------|-------|
@@ -672,7 +626,7 @@ A production agent might use all three: Cedar to enforce *"can this user do this
 </details>
 
 <details>
-<summary><strong>Appendix H: Resource Resolver Formats</strong></summary>
+<summary><strong>Appendix F: Resource Resolver Formats</strong></summary>
 
 The `resource_resolver` parameter accepts four formats. Tools not in the mapping fall back to `Tool::"tool_name"`.
 
@@ -739,12 +693,12 @@ when { resource.owner == principal };
 </details>
 
 <details>
-<summary><strong>Appendix I: Verifier API and CI/CD Integration</strong></summary>
+<summary><strong>Appendix G: Verifier API and CI/CD Integration</strong></summary>
 
 The verifier follows the same builder pattern as the plugin itself:
 
 ```python
-from cedar_auth_plugin import CedarPolicyVerifier
+from cedar_policy_verifier import CedarPolicyVerifier
 
 # Option 1: Verify policies from files
 verifier = (
@@ -795,7 +749,7 @@ The verifier is most useful when paired with the auto-generated schema. A CI pip
 </details>
 
 <details>
-<summary><strong>Appendix J: Full Cedar Examples</strong></summary>
+<summary><strong>Appendix H: Full Cedar Examples</strong></summary>
 
 **Loading from files:**
 
@@ -867,7 +821,7 @@ agent("terminate instance i-abc123", invocation_state={"user_id": "alice@acme.co
 </details>
 
 <details>
-<summary><strong>Appendix K: Cedar vs. OPA</strong></summary>
+<summary><strong>Appendix I: Cedar vs. OPA</strong></summary>
 
 OPA (Open Policy Agent) with Rego is the most widely adopted policy engine — battle-tested, Kubernetes-native, huge ecosystem. It's the obvious alternative.
 
@@ -888,7 +842,7 @@ OPA (Open Policy Agent) with Rego is the most widely adopted policy engine — b
 </details>
 
 <details>
-<summary><strong>Appendix L: Cedar Model Mapping</strong></summary>
+<summary><strong>Appendix J: Cedar Model Mapping</strong></summary>
 
 Strands concepts map onto Cedar's authorization model:
 
@@ -938,7 +892,7 @@ forbid (
 </details>
 
 <details>
-<summary><strong>Appendix M: Builder-to-Cedar Mapping</strong></summary>
+<summary><strong>Appendix K: Builder-to-Cedar Mapping</strong></summary>
 
 | Builder method | Generated Cedar |
 |---------------|----------------|
