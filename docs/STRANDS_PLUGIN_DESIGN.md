@@ -19,7 +19,7 @@
 - Appendices: [A (Design Decisions)](#appendix-a-key-design-decisions) · [B (Framework Identity)](#appendix-b-how-other-frameworks-handle-identity) · [C (Runtime Conditions)](#appendix-c-runtime-condition-examples) · [D (Control Plugins)](#appendix-d-comparison-with-existing-control-plugins) · [E (Tool-Set Swapping)](#appendix-e-tool-set-swapping-vs-cedar) · [F (Resource Resolver)](#appendix-f-resource-resolver-formats) · [G (Verifier/CI)](#appendix-g-verifier-api-and-cicd-integration) · [H (Full Cedar)](#appendix-h-full-cedar-examples) · [I (Cedar vs. OPA)](#appendix-i-cedar-vs-opa) · [J (Model Mapping)](#appendix-j-cedar-model-mapping) · [K (Builder→Cedar)](#appendix-k-builder-to-cedar-mapping)
 
 <details>
-<summary><strong>Definitions</strong></summary>
+<summary><h2>Definitions</h2></summary>
 
 | Term | Definition |
 |------|-----------|
