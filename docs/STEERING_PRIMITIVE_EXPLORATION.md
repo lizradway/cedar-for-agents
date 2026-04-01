@@ -1,16 +1,18 @@
-# Steering as a Unified Agent Intervention Primitive
+# Intervention: A First-Class Agent Control Primitive
 
-> Exploration document — not a specification or commitment. This doc investigates whether Strands Agents' **Steering** concept generalizes into a primitive that could subsume Cedar authorization, content guardrails, and other agent control mechanisms.
+> Exploration document — not a specification or commitment. This doc proposes that Strands Agents should elevate **Intervention** to a first-class API surface, where Cedar authorization, LLM steering, Galileo Agent Control, content guardrails, and operational controls are all instances of the same primitive.
 
 ## Table of Contents
 
 - [What Strands Steering Is](#what-strands-steering-is)
-- [How Cedar Auth Maps to Steering](#how-cedar-auth-maps-to-steering)
-- [The Unified Intervention Primitive](#the-unified-intervention-primitive)
+- [The Shared Pattern](#the-shared-pattern)
+- [The Insight: Intervention Is the Primitive](#the-insight-intervention-is-the-primitive)
+- [Proposed API: `Agent(interventions=[...])`](#proposed-api-agentinterventions)
+  - [Why Not a Fixed Method Per Hook Point?](#why-not-a-fixed-method-per-hook-point)
 - [Concrete Instances](#concrete-instances)
 - [Composability](#composability)
-- [What This Means for the Cedar Plugin](#what-this-means-for-the-cedar-plugin)
-- [Open Questions](#open-questions)
+- [Working Demos](#working-demos)
+- [What Would Need to Change in Strands](#what-would-need-to-change-in-strands)
 
 ---
 
@@ -59,58 +61,37 @@ agent = Agent(tools=[send_email], plugins=[handler])
 - **Content-aware**: Steering evaluates *what the agent is doing* and *how well* — tone, task adherence, safety
 - **LLM-evaluated**: The default handler uses an LLM to make decisions, trading latency for flexibility
 - **Stateful**: Context accumulates across the agent loop, enabling multi-step reasoning about agent behavior
-- **Currently Python-only**
 
 ---
 
-## How Cedar Auth Maps to Steering
+## The Shared Pattern
 
-The Cedar authorization plugin (`cedar_auth_plugin.ts`) and Strands Steering share a surprising amount of mechanical structure despite answering fundamentally different questions.
+Despite answering fundamentally different questions, these tools share the same mechanical structure:
 
-### Structural Comparison
+| | Cedar Auth | LLM Steering | Datadog AI Guard | Galileo Agent Control |
+|---|---|---|---|---|
+| **Question** | *Is this principal allowed?* | *Is this the right thing to do?* | *Is this content safe?* | *Does this violate a rule?* |
+| **Engine** | Cedar policies (WASM) | LLM judge | Datadog API | Centralized rule server |
+| **Hook points** | `BeforeToolCall` | `BeforeToolCall`, `AfterModelCall` | 4 events (model + tool, before + after) | 6+ events |
+| **Outcomes** | Allow / Deny | Proceed / Guide / Interrupt | Block / Replace / Pass | Deny (exception) / Guide |
+| **Determinism** | Formally verifiable | Probabilistic | Deterministic | Deterministic |
+| **Latency** | Sub-ms | 100ms+ (LLM call) | ms (API call) | ms (server call) |
+| **Default posture** | Deny unless permitted | Proceed unless flagged | Proceed unless threat detected | Proceed unless rule matches |
 
-| Dimension | Strands Steering | Cedar Auth Plugin |
-|-----------|-----------------|-------------------|
-| **Hook point** | `BeforeToolCallEvent` (tool steering) | `BeforeToolCallEvent` |
-| **Context gathered** | Tool history, inputs/outputs, timing, session metadata | Principal identity, roles, tool arguments, timestamp, environment, rate limit counters |
-| **Evaluation engine** | LLM with natural-language guidance | Cedar policy engine with formal Cedar policies |
-| **Possible outcomes** | Proceed / Guide / Interrupt | Allow / Deny |
-| **On denial/guide** | Injects feedback for model to retry | Cancels tool call with denial message |
-| **Audit** | Via LedgerProvider | Via `auditLog[]` |
-| **Determinism** | Non-deterministic (LLM-based) | Fully deterministic (formal policy evaluation) |
-| **Latency** | High (LLM call per decision) | Sub-millisecond (WASM policy evaluation) |
+They diverge in *how* they evaluate and *what* they know about. But they converge on the same lifecycle:
 
-### Where They Diverge
-
-**The question they answer:**
-- Steering: *"Is this the right thing for the agent to do right now, given the task context?"*
-- Cedar Auth: *"Is this principal allowed to perform this action on this resource?"*
-
-**Evaluation guarantees:**
-- Steering is probabilistic — the LLM might make different decisions on the same input
-- Cedar is formally verifiable — you can statically prove properties like "no principal outside Role::admin can reach delete_record"
-
-**Default posture:**
-- Steering defaults to **proceed** (only intervenes when guidance triggers)
-- Cedar defaults to **deny** (only proceeds when an explicit permit matches)
-
-### Where They Converge
-
-Both are **intervention layers** that:
-1. Accumulate context from agent execution
-2. Evaluate that context against rules (formal or informal)
-3. Decide whether to let the action proceed, redirect it, or block it
-4. Produce an audit trail of decisions
+1. **Intercept** an agent execution event
+2. **Evaluate** context against rules (formal, natural-language, or pattern-based)
+3. **Decide** whether to proceed, redirect, or block
+4. **Log** the decision
 
 This shared pattern suggests a deeper abstraction.
 
 ---
 
-## The Unified Intervention Primitive
+## The Insight: Intervention Is the Primitive
 
-What if "steering" is not just a Strands feature, but a **general pattern** for controlling agent behavior? We can abstract the shared mechanics into a primitive:
-
-### The Pattern
+Steering is not just a Strands feature — it's a specific *instance* of a general pattern for controlling agent behavior. Cedar auth is another instance. Content guardrails are a third. Galileo's Agent Control is a fourth — and it's particularly telling, because it independently arrived at the same deny-or-guide duality that this primitive describes, but had to split it across two separate plugins (`AgentControlPlugin` for deny, `AgentControlSteeringHandler` for guide) because Strands doesn't yet have a unified intervention interface. They all share the same mechanics:
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -130,89 +111,211 @@ What if "steering" is not just a Strands feature, but a **general pattern** for 
 └─────────────────────────────────────────────────────┘
 ```
 
-### Four Components
+The primitive has four components:
 
-**1. Context Accumulation**
+### 1. Events
 
-Every intervention handler needs to know *what's happening*. Context sources include:
+Every handler needs to know *what's happening*. Typed `InterventionEvent` subclasses carry the relevant context for each lifecycle point:
 
-- **Identity**: Who is the principal? What roles do they have? (Cedar)
-- **Tool state**: What tool is being called, with what arguments? What tools were called before? (Steering, Cedar)
-- **Content**: What did the model say? What is the user's intent? (Steering, Guardrails)
-- **Environment**: Production vs staging? Time of day? Deploy freeze? (Cedar, Agent Control)
-- **Session**: How many calls this session? What's the cumulative cost? (Rate limiting)
+- **`BeforeToolCallEvent`** — tool name, arguments, principal identity, roles, environment (Cedar, Guardrails, Steering)
+- **`AfterToolCallEvent`** — tool name, arguments, output (Datadog AI Guard)
+- **`BeforeModelCallEvent`** — user/system messages (Datadog AI Guard)
+- **`AfterModelCallEvent`** — model output, stop reason (Steering, Datadog AI Guard)
 
-A unified primitive would define a `Context` type that any handler can read from and write to:
+Each event type carries what's relevant. Handlers inspect the event type they registered for — they don't receive a bloated universal context object.
 
-```typescript
-interface InterventionContext {
-  // Identity
-  principal?: { type: string; id: string; roles: string[] };
-
-  // Current action
-  tool?: { name: string; input: Record<string, unknown> };
-  modelResponse?: { content: string; stopReason: string };
-
-  // History
-  toolHistory: Array<{ name: string; input: unknown; output: unknown; durationMs: number }>;
-
-  // Environment
-  environment?: string;
-  timestamp: Date;
-
-  // Session
-  sessionMetadata: Record<string, unknown>;
-
-  // Extensible
-  [key: string]: unknown;
-}
-```
-
-**2. Evaluation Engine**
+### 2. Evaluation Engine
 
 This is where handlers diverge — and that's the point. The primitive doesn't prescribe *how* you evaluate, only *that* you evaluate and *what* you return.
 
 | Engine | Properties | Best For |
 |--------|-----------|----------|
-| Cedar policies | Deterministic, formally verifiable, sub-ms | Authorization, compliance rules |
-| LLM judge | Flexible, natural-language, non-deterministic | Content quality, tone, task adherence |
-| Rule engine (Datadog, custom) | Deterministic, configurable, fast | Safety guardrails, content filtering |
-| Human-in-the-loop | Perfect accuracy, high latency | High-stakes actions, approval workflows |
+| Cedar policies | Deterministic, formally verifiable, sub-ms | Authorization, compliance |
+| Galileo Agent Control | Centralized rules, no-code updates, deny + guide | Runtime governance, operational controls |
+| Datadog AI Guard | Service-backed, multi-point scanning, content-focused | Prompt injection, jailbreak, data exfiltration |
+| LLM judge (Strands `LLMSteeringHandler`) | Flexible, natural-language, non-deterministic | Content quality, tone, task adherence |
+| Rule engine (custom) | Deterministic, configurable, fast | Safety guardrails, content filtering |
+| Human-in-the-loop | Perfect accuracy, high latency | High-stakes approval workflows |
 
-**3. Action**
+### 3. Action
 
-The evaluation produces a decision. Across all systems, we see four actions:
+The evaluation produces one of four decisions:
 
 | Action | Meaning | Used By |
 |--------|---------|---------|
 | **Proceed** | Allow the action | All |
-| **Guide** | Redirect — cancel and provide feedback for the model to retry | Steering |
-| **Deny** | Hard block — cancel with a denial message, no retry | Cedar Auth |
+| **Guide** | Redirect — cancel and provide feedback for retry | Steering, Agent Control |
+| **Deny** | Hard block — cancel with denial, no retry | Cedar Auth, Agent Control |
 | **Interrupt** | Pause for human input | Steering, Approval workflows |
 
-Note: **Guide** and **Deny** are both cancellations, but with different intent. Guide says "try again differently"; Deny says "you are not allowed, period." This distinction matters because Guide keeps the agent in the loop (it can adapt), while Deny terminates that path (the agent should explain the denial, not work around it).
+**Guide** and **Deny** are both cancellations with different intent. Guide says "try again differently" — the agent can adapt. Deny says "you are not allowed, period" — the agent should explain the denial, not work around it.
 
-```typescript
-type InterventionAction =
-  | { type: "proceed" }
-  | { type: "guide"; feedback: string }   // cancel + retry with guidance
-  | { type: "deny"; reason: string }      // hard block, no retry
-  | { type: "interrupt"; prompt: string }; // pause for human
+### 4. Audit Trail
+
+Every handler logs its decision into a unified stream. One audit log for authorization, guardrails, and steering together.
+
+---
+
+## Proposed API: `Agent(interventions=[...])`
+
+Intervention should be a **first-class API surface** on Strands agents, not something users build themselves. We have implemented a working proof-of-concept in both the [Python](../strands-agents-sdk/) and [TypeScript](../strands-agents-sdk-ts/) SDK forks.
+
+### Today: Separate Plugins, No Composition
+
+```python
+# Each concern is a standalone plugin — no shared interface, no ordering guarantees,
+# no conflict resolution, no unified audit log
+cedar_plugin = CedarAuthPlugin.builder()...build()
+steering_plugin = LLMSteeringHandler(system_prompt="...")
+
+agent = Agent(plugins=[cedar_plugin, steering_plugin], tools=[...])
 ```
 
-**4. Audit Trail**
+Cedar and steering fire their hooks independently. There's no way to say "skip the expensive LLM steering call if Cedar already denied." No shared action vocabulary. No unified audit trail.
 
-Every handler logs its decision. The primitive standardizes this:
+### Alternative Approach: InterventionPipeline as Plugin
 
+In our demos, we explored building an `InterventionPipeline` that composes handlers with ordering and conflict resolution, then wraps it as a single plugin:
+
+```python
+# All handlers implement InterventionHandler — the shared interface
+pipeline = InterventionPipeline(
+    handlers=[cedar, guardrails, steering],
+)
+agent = Agent(plugins=[pipeline], tools=[...])
+```
+
+This works (the demos prove it), but it's a userland workaround. Users have to build and wire up the pipeline themselves, and the framework doesn't understand what's inside it.
+
+### Implemented: Native Concept
+
+**Python:**
+```python
+agent = Agent(
+    tools=[query_database, send_email],
+    interventions=[
+        # Evaluated in order; cheapest/most-deterministic first
+        cedar,        # CedarAuthHandler — sub-ms, formal policies
+        guardrails,   # ContentGuardrailHandler — sub-ms, pattern matching
+        steering,     # LLMSteeringHandler — 100ms+, LLM-based guidance
+    ],
+)
+```
+
+**TypeScript:**
 ```typescript
-interface InterventionRecord {
-  handler: string;           // "cedar-auth", "tone-steering", "datadog-guardrail"
-  timestamp: string;
-  action: InterventionAction;
-  context: Partial<InterventionContext>;  // what was evaluated
-  evaluation: unknown;       // handler-specific detail (policy IDs, LLM reasoning, rule matches)
+const agent = new Agent({
+    tools: [queryDatabase, sendEmail],
+    interventions: [
+        cedar,        // CedarAuthHandler — sub-ms, formal policies
+        guardrails,   // ContentGuardrailHandler — sub-ms, pattern matching
+        steering,     // LLMSteeringHandler — 100ms+, LLM-based guidance
+    ],
+})
+```
+
+### Why First-Class?
+
+1. **The framework owns composition.** Ordering, conflict resolution, and short-circuiting are built in. Users don't need to build an `InterventionPipeline` themselves.
+
+2. **Deny short-circuits before expensive handlers.** When Cedar denies a tool call (sub-ms), the LLM steering handler (~100ms) never runs. The framework makes this automatic.
+
+3. **Unified audit log.** One stream for all intervention types — authorization denials, content blocks, and steering guidance — queryable from the agent.
+
+4. **Steering becomes one instance, not a special concept.** Today, steering is a separate feature with its own handler hierarchy (`SteeringHandler → LLMSteeringHandler`). With interventions as the primitive, `LLMSteeringHandler` just implements `InterventionHandler` — the same interface Cedar implements. Users learn one concept.
+
+5. **Deny becomes a first-class action.** Steering today only has Proceed/Guide/Interrupt. Authorization needs Deny — a hard block that means "you are not allowed, period." Adding Deny to the action vocabulary makes the framework useful for enforcement, not just guidance.
+
+### The `InterventionHandler` Interface
+
+The interface is **event-driven** rather than having a fixed method per hook point. This means new lifecycle events (e.g. `BeforeNodeCallEvent`) can be supported by handlers without changing the base interface.
+
+**Python:**
+```python
+class InterventionHandler(ABC):
+    @property
+    @abstractmethod
+    def name(self) -> str: ...
+
+    @abstractmethod
+    def handles(self) -> set[type]:
+        """Declare which Strands event types this handler cares about."""
+        ...
+
+    @abstractmethod
+    async def evaluate(self, event: HookEvent) -> InterventionAction: ...
+```
+
+**TypeScript:**
+```typescript
+interface InterventionHandler {
+    readonly name: string
+    handles(): Set<HookableEventConstructor>
+    evaluate(event: HookableEvent): InterventionAction | Promise<InterventionAction>
 }
 ```
+
+Handlers declare which events they care about via `handles()`, and the framework only calls `evaluate()` for matching events. At each lifecycle point, the framework runs all registered handlers for that event type in registration order, short-circuits on Deny, accumulates Guide feedback, and logs every decision.
+
+### Why Not a Fixed Method Per Hook Point?
+
+The obvious alternative is one method per lifecycle event:
+
+```python
+class InterventionHandler(ABC):
+    async def evaluate_tool_call(self, ctx: ToolCallContext) -> InterventionAction: ...
+    async def evaluate_model_input(self, ctx: ModelInputContext) -> InterventionAction: ...
+    async def evaluate_model_output(self, ctx: ModelOutputContext) -> InterventionAction: ...
+    async def evaluate_tool_result(self, ctx: ToolResultContext) -> InterventionAction: ...
+```
+
+This is readable and each method gets a nicely typed context. But it doesn't hold up:
+
+**Today, Strands has at least 7 lifecycle events** — `BeforeInvocationEvent`, `BeforeModelCallEvent`, `AfterModelCallEvent`, `BeforeToolCallEvent`, `AfterToolCallEvent`, `BeforeNodeCallEvent`, `AfterNodeCallEvent`. That's 7 methods on the base class, most of which any given handler ignores. Cedar implements 1. Datadog AI Guard implements 4. Galileo Agent Control hooks into nearly all of them.
+
+**This only grows.** When Strands adds `BeforeRetryEvent` or `AfterInvocationEvent`, every handler plugin needs updating — even if they don't care about the new event. The base class changes, default no-op implementations accumulate, and handlers that were working fine now need to be re-released against the new interface version.
+
+**Existing plugins already show the problem.** Datadog AI Guard hooks into 4 events today. Galileo Agent Control hooks into 6+. If either product adds coverage for a new event type, they'd need to wait for the `InterventionHandler` base class to add a corresponding method first. The base interface becomes a bottleneck for the ecosystem.
+
+The event-driven approach avoids all of this. The base interface is stable — `handles()` + `evaluate()` never changes. Handlers opt into new event types by adding them to their `handles()` set. The framework doesn't need to know about specific event types at the interface level.
+
+### How Each Handler Declares Its Scope
+
+```python
+class CedarAuthHandler(InterventionHandler):
+    def handles(self):
+        return {BeforeToolCall}  # Cedar only cares about tool authorization
+
+class DatadogAIGuardHandler(InterventionHandler):
+    def handles(self):
+        return {BeforeModelCall, AfterModelCall, BeforeToolCall, AfterToolCall}  # Full coverage
+
+class LLMSteeringHandler(InterventionHandler):
+    def handles(self):
+        return {BeforeToolCall, AfterModelCall}  # Tool steering + model steering
+```
+
+### How `LLMSteeringHandler` Fits
+
+Strands' existing `LLMSteeringHandler` already has the right shape: `steer_before_tool()` evaluates a tool call and returns Proceed/Guide/Interrupt. A thin adapter maps this to `InterventionHandler`:
+
+```python
+class StrandsSteeringAdapter(InterventionHandler):
+    """Wraps real LLMSteeringHandler as an InterventionHandler."""
+
+    def handles(self):
+        return {BeforeToolCall}
+
+    async def evaluate(self, event: InterventionEvent) -> InterventionAction:
+        action = await self._handler.steer_before_tool(
+            agent=self._agent, tool_use={"name": event.tool_name, "input": event.tool_input}
+        )
+        if isinstance(action, StrandsProceed): return Proceed(reason=action.reason)
+        if isinstance(action, StrandsGuide):   return Guide(feedback=action.reason)
+        if isinstance(action, StrandsInterrupt): return Interrupt(prompt=action.reason)
+```
+
+If Strands made `InterventionHandler` native, `LLMSteeringHandler` would implement it directly — no adapter needed.
 
 ---
 
@@ -221,251 +324,248 @@ interface InterventionRecord {
 ### 1. Cedar Authorization
 
 ```
-Context:   principal (identity + roles) + tool (name + args) + environment + session
-Engine:    Cedar policy evaluation (WASM, sub-ms, deterministic)
-Actions:   Proceed | Deny
-Posture:   Default-deny
-Strength:  Formally verifiable, identity-aware, argument-level scoping
+Engine:      Cedar policy evaluation (WASM/native, sub-ms, deterministic)
+Actions:     Proceed | Deny
+Posture:     Default-deny
+Strength:    Formally verifiable, identity-aware, argument-level scoping per role
+Hook points: BeforeToolCall
 ```
 
-Cedar is a **tool-level intervention** that answers "is this principal authorized?" It's the only instance that brings identity into the equation. Its formal verification property (you can statically prove "no analyst can reach delete_record") is unique and valuable — other engines can't offer this.
+Answers "is this principal authorized?" — identity-aware, argument-level scoping per role, formally verifiable.
 
 ### 2. LLM Steering (Strands built-in)
 
 ```
-Context:   tool history + current tool/model output + session metadata (via LedgerProvider)
-Engine:    LLM with natural-language system prompt
-Actions:   Proceed | Guide | Interrupt
-Posture:   Default-proceed
-Strength:  Flexible, handles ambiguous/subjective criteria, natural-language rules
+Engine:      LLM with natural-language system prompt
+Actions:     Proceed | Guide | Interrupt
+Posture:     Default-proceed
+Strength:    Flexible, handles ambiguous/subjective criteria
+Hook points: BeforeToolCall, AfterModelCall
 ```
 
-LLM Steering is both a **tool-level** and **model-level** intervention. It's the most flexible engine (anything you can express in language), but non-deterministic and high-latency (requires an LLM call per evaluation).
+LLM Steering is the most flexible engine — anything you can express in language. But non-deterministic and high-latency. Best used last in the pipeline, after cheaper handlers have filtered.
 
-### 3. Datadog AI Guardrails / Safety Rules
-
-```
-Context:   model output content + tool arguments + predefined rule patterns
-Engine:    Pattern matching, classifier models, blocklists
-Actions:   Proceed | Deny | Guide
-Posture:   Default-proceed (blocklist approach)
-Strength:  Fast, deterministic, integrated with observability
-```
-
-Safety guardrails are typically **content-focused interventions** — checking for PII leakage, toxic content, prompt injection attempts, or policy violations. They don't care about identity; they care about what's being said or done.
-
-### 4. Agent Control (rate limiting, environment gating, approval workflows)
+### 3. Datadog AI Guard ([Strands community plugin](https://strandsagents.com/docs/community/plugins/datadog-ai-guard/))
 
 ```
-Context:   session counters + environment flags + time + approval status
-Engine:    Simple rule evaluation (comparisons, thresholds)
-Actions:   Proceed | Deny | Interrupt
-Posture:   Varies
-Strength:  Simple, fast, operational
+Engine:      Datadog AI Guard API (prompt injection, jailbreak, data exfiltration detection)
+Actions:     Proceed | Deny
+Posture:     Default-proceed (threat detection approach)
+Strength:    Multi-point scanning, content-focused, service-backed
+Hook points: BeforeModelCall, AfterModelCall, BeforeToolCall, AfterToolCall
 ```
 
-Agent control mechanisms are **operational interventions** — enforcing rate limits, blocking destructive operations in production, requiring human approval for high-stakes actions. These are often the simplest rules but among the most critical.
+Datadog's [AI Guard](https://strandsagents.com/docs/community/plugins/datadog-ai-guard/) scans at **four** lifecycle points — not just before tool calls:
+
+| Event | Scans | On Threat |
+|-------|-------|-----------|
+| `BeforeModelCallEvent` | User prompts | Hard block (raises `AIGuardAbortError`) |
+| `AfterModelCallEvent` | Model text output | Hard block |
+| `BeforeToolCallEvent` | Tool call + conversation context | Cancels tool with message |
+| `AfterToolCallEvent` | Tool result | Replaces result content with safe message |
+
+This is the broadest hook coverage of any instance — it checks inputs, outputs, tool calls, and tool results. It catches prompt injection, jailbreaking, data exfiltration, and destructive tool calls.
+
+**Content replacement at `AfterToolCall`:** Today, AI Guard replaces tool results with safe messages rather than blocking outright. This maps to Deny in our action vocabulary (the original result is discarded), though a future "Sanitize" action — where the handler returns modified content instead of blocking — could be a cleaner fit. See [Open Questions](#open-questions).
+
+The event-driven `InterventionHandler` interface accommodates this naturally — AI Guard declares `handles() → {BeforeModelCall, AfterModelCall, BeforeToolCall, AfterToolCall}` and the framework calls its `evaluate()` at each matching lifecycle point.
+
+### 4. Content Guardrails (custom rules)
+
+```
+Engine:      Pattern matching, classifier models, blocklists
+Actions:     Proceed | Deny
+Posture:     Default-proceed (blocklist approach)
+Strength:    Fast, deterministic, content-focused
+Hook points: BeforeToolCall (typically)
+```
+
+Simple guardrails check *what's being said*, not *who's saying it*. PII detection, SQL injection, toxic content. Identity-unaware. These are the simplest instance — regex or classifier, no external service.
+
+### 5. Galileo Agent Control ([Strands community plugin](https://strandsagents.com/docs/community/plugins/agent-control/))
+
+```
+Engine:      Centralized rule server or local controls.yaml, evaluated at runtime
+Actions:     Proceed | Deny | Guide (via AgentControlSteeringHandler)
+Posture:     Default-proceed (blocklist/rule-match approach)
+Strength:    Centralized policy management, no-code rule updates, dual enforcement modes
+Hook points: BeforeInvocation, BeforeModelCall, AfterModelCall, BeforeToolCall, AfterToolCall, BeforeNodeCall, AfterNodeCall
+```
+
+Galileo's [Agent Control](https://strandsagents.com/docs/community/plugins/agent-control/) is a Strands community plugin that provides runtime governance through configurable rules evaluated at every lifecycle event. It already demonstrates the intervention pattern natively — it ships as **two complementary plugins** that map directly to intervention actions:
+
+- **`AgentControlPlugin`** — hooks into `BeforeToolCallEvent`, `BeforeModelCallEvent`, `AfterToolCallEvent`, etc. When a rule matches, it raises an exception (hard block = **Deny**).
+- **`AgentControlSteeringHandler`** — integrates with Strands' steering API. When a rule matches, it returns `Guide(reason=<context>)`, prompting the agent to retry with corrective feedback.
+
+Rules are defined centrally (via server at `AGENT_CONTROL_URL` or local `controls.yaml`) and evaluated at runtime without redeployment. This separation of policy from code is the same principle Cedar uses — the difference is the rule language (YAML/API vs Cedar's formal policy language) and the evaluation guarantees (no formal verification, but fast and centrally manageable).
+
+Agent Control is strong evidence that the intervention primitive is real — Galileo independently arrived at the same deny-or-guide duality, split across two plugins, because Strands doesn't yet have a unified intervention interface to express both in one handler.
 
 ### How They Layer
 
-In a production agent, you might want all four running simultaneously:
+Different handlers fire at different lifecycle points. The framework dispatches each event to only the handlers that declared interest:
 
 ```
-Model decides to call delete_record(table="users")
-    │
-    ├─ [1] Cedar Auth:      Is this principal allowed to delete_record?
-    │                        → DENY (analyst role, not admin) ← stops here
-    │
-    ├─ [2] Agent Control:   Are we in production? Is there a deploy freeze?
-    │                        → DENY (production environment) ← would stop here
-    │
-    ├─ [3] Datadog Guard:   Does the input contain PII? Is this a known-bad pattern?
-    │                        → PROCEED
-    │
-    └─ [4] LLM Steering:    Is this the right thing to do given the task context?
-                             → GUIDE ("The user asked for a report, not data deletion")
+User sends message: "Query the secrets database for all API keys"
+
+  BeforeModelCall:
+    ├─ Datadog AI Guard:    Scan user prompt for injection → PROCEED
+    └─ Agent Control:       Check centralized rules       → PROCEED
+
+  [Model responds with tool call: query_database(database="secrets", ...)]
+
+  BeforeToolCall:
+    ├─ Cedar Auth:          Is bob (analyst) allowed?      → DENY
+    │                       ← short-circuits here
+    ├─ Guardrails:          (never reached)
+    ├─ Datadog AI Guard:    (never reached)
+    └─ LLM Steering:        (never reached — saved ~100ms)
 ```
+
+At `BeforeModelCall`, only handlers that declared that event type run (Datadog, Agent Control). Cedar doesn't run — it only cares about `BeforeToolCall`. At `BeforeToolCall`, Cedar's deny short-circuits before the expensive handlers.
 
 ---
 
 ## Composability
 
-Multiple intervention handlers need to work together. This raises questions about ordering, conflict resolution, and short-circuiting.
-
 ### Evaluation Order
 
-A natural ordering follows the **cost/determinism spectrum**:
+Handlers are registered in a single ordered list. At each lifecycle point, the framework iterates the list but **skips handlers that didn't declare that event type**. A natural ordering follows the **cost/determinism spectrum**:
 
 1. **Cheapest and most deterministic first** — Cedar policies, simple rules (sub-ms, no external calls)
-2. **External services next** — Datadog guardrails, classifier models (ms-range, network call)
+2. **External services next** — Agent Control (centralized rule server), Datadog AI Guard (ms-range, API call)
 3. **LLM-based last** — Steering handlers (100ms+, LLM call)
 
-This ordering is efficient (fast handlers short-circuit before expensive ones run) and safe (deterministic denials can't be overridden by probabilistic handlers).
+This single ordering works across all event types. At `BeforeToolCall`, all 5 handlers might fire (Cedar → Guardrails → Agent Control → Datadog → Steering). At `BeforeModelCall`, only Datadog and Agent Control fire — but they still run in the order they were registered. At `AfterModelCall`, Datadog fires before Steering.
+
+This is efficient (fast handlers short-circuit before expensive ones run) and safe (deterministic denials can't be overridden by probabilistic handlers).
 
 ### Conflict Resolution
 
-**Deny wins.** If any handler returns Deny, the action is blocked regardless of what other handlers say. This is the same principle as Cedar's own `forbid` overriding `permit`.
-
-**Guide accumulates.** If no handler denies but multiple handlers return Guide, their feedback can be concatenated and presented to the model together.
-
-**Interrupt pauses.** If any handler returns Interrupt (and none denied), execution pauses for human input.
+At each lifecycle point, the framework applies the same resolution across all handlers that fired:
 
 ```
 Final decision =
-  if any Deny     → Deny (with combined reasons)
+  if any Deny     → Deny (short-circuits immediately)
   if any Interrupt → Interrupt (with prompt)
-  if any Guide     → Guide (with accumulated feedback)
+  if any Guide     → Guide (with accumulated feedback from all guiding handlers)
   else             → Proceed
 ```
 
-### Registration API (Sketch)
+**Deny wins** — same principle as Cedar's `forbid` overriding `permit`. **Guide accumulates** — if multiple handlers return Guide, their feedback is concatenated. **Interrupt pauses** — if any handler needs human input and none denied.
+
+---
+
+## Working Demos
+
+Three approaches are demonstrated: **Native SDK Implementation** (the real `Agent(interventions=[...])` parameter implemented in the SDK), the **First-Class API Standalone** (event-driven handlers without SDK modifications), and the **InterventionPipeline** (a userland workaround).
+
+### Native SDK Implementation — Real `Agent(interventions=[...])`
+
+These demos use the **real native interventions parameter** added directly to the Strands SDK source. No wrappers, no bridge plugins — handlers are passed to `Agent` and the SDK's `InterventionRegistry` wires them into the hook system automatically.
+
+**Python** — [`python/strands-cedar-auth/demos/intervention/native.py`](../python/strands-cedar-auth/demos/intervention/native.py)
+
+```
+cd strands-agents-sdk && pip install -e .
+pip install cedarpy
+python demos/intervention/native.py
+```
+
+Uses the real `Agent(interventions=[cedar, guardrails, steering])` parameter. Handlers import directly from `strands`:
+
+```python
+from strands import Agent, InterventionHandler, Proceed, Deny, Guide
+from strands.hooks.events import BeforeToolCallEvent
+
+agent = Agent(
+    tools=[query_database, send_email, search],
+    interventions=[cedar, guardrails, steering],
+)
+result = agent("Query the analytics database", invocation_state={"user_id": "bob", "roles": ["analyst"]})
+```
+
+Three handlers (CedarAuthHandler, ContentGuardrailHandler, MockLLMSteeringHandler) receive real Strands `BeforeToolCallEvent` objects — `event.tool_use["name"]`, `event.invocation_state["user_id"]`. Audit log accessed via `agent._intervention_registry.audit_log`.
+
+**TypeScript** — [`js/strands-cedar-auth/demos/intervention/native.ts`](../js/strands-cedar-auth/demos/intervention/native.ts)
+
+```
+cd strands-agents-sdk-ts && npm install && npx tsc -p src/tsconfig.json
+npx tsx demos/intervention/native.ts
+```
+
+Uses the real `InterventionRegistry` and Strands event types from the modified SDK. Five handlers (Cedar, operational controls, guardrails, Datadog AI Guard, mock LLM steering) receive real Strands events — `event.toolUse.name`, `event.agent.appState.get("user_id")`. 10 scenarios across all event types.
 
 ```typescript
+import { Agent, BeforeToolCallEvent } from '@strands-agents/sdk'
+import type { InterventionHandler, InterventionAction } from '@strands-agents/sdk'
+
 const agent = new Agent({
-  tools: [...],
-  interventions: [
-    // Evaluated in order; fast/deterministic first
-    CedarAuthHandler.builder()
-      .role("admin", { tools: ["*"] })
-      .role("analyst", { tools: ["search", "query_database"] })
-      .build(),
-
-    AgentControlHandler.builder()
-      .rateLimit("send_email", { maxPerSession: 10 })
-      .denyToolsInEnv("production", ["delete_record", "drop_table"])
-      .build(),
-
-    DatadogGuardrailHandler.from({
-      apiKey: process.env.DD_API_KEY,
-      rules: ["pii-detection", "prompt-injection"],
-    }),
-
-    LLMSteeringHandler.from({
-      systemPrompt: "Ensure the agent stays on task and maintains professional tone.",
-    }),
-  ],
-});
+  tools: [queryDatabase, sendEmail, search],
+  interventions: [cedar, ops, guardrails, datadog, steering],
+})
 ```
+
+**SDK Changes Made:**
+
+| SDK | Files Modified/Created |
+|-----|----------------------|
+| Python (`strands-agents-sdk/`) | `src/strands/interventions/` (handler.py, actions.py, registry.py, \_\_init\_\_.py), `src/strands/agent/agent.py` (added `interventions` param), `src/strands/__init__.py` (exports) |
+| TypeScript (`strands-agents-sdk-ts/`) | `src/interventions/` (handler.ts, actions.ts, registry.ts, index.ts), `src/agent/agent.ts` (added `interventions` param), `src/index.ts` (exports) |
+
+Both implementations follow the same pattern:
+1. `InterventionHandler` interface: `name` + `handles()` + `evaluate(event)`
+2. `InterventionRegistry`: bridges handlers to `HookRegistry`, one callback per event type
+3. `Agent` constructor: accepts `interventions`, wires them BEFORE plugins so they fire first
+4. Handlers receive real Strands events — no conversion layer, no custom event types
+
+### InterventionPipeline — Userland Workaround
+
+These demos show the alternative approach we explored: composing handlers into an `InterventionPipeline` that wraps as a single Strands Plugin. This works today but is a userland workaround — the framework doesn't understand what's inside.
+
+**Python** — [`python/strands-cedar-auth/demos/intervention/pipeline.py`](../python/strands-cedar-auth/demos/intervention/pipeline.py)
+
+```
+pip install cedarpy strands-agents
+python demos/intervention/pipeline.py
+```
+
+Runs a **real Strands agent** with three handlers composed in a pipeline. Uses the **real** `LLMSteeringHandler` from `strands.vended_plugins.steering` making actual LLM calls. The audit log shows real LLM reasoning alongside Cedar decisions, and demonstrates short-circuiting (LLM steering never runs when Cedar denies).
+
+**TypeScript** — [`js/strands-cedar-auth/demos/intervention/pipeline.ts`](../js/strands-cedar-auth/demos/intervention/pipeline.ts)
+
+```
+npx tsx demos/intervention/pipeline.ts
+```
+
+Same pipeline approach with 4 handlers (Cedar, operational controls, guardrails, mock LLM steering) across 10 scenarios. LLM steering is mocked (Strands TS SDK doesn't have steering yet).
+
+### What the Demos Prove
+
+No single handler catches everything:
+
+| Threat | Caught By | Missed By |
+|--------|-----------|-----------|
+| Unauthorized access (wrong role) | Cedar | Guardrails, Steering, Agent Control |
+| PII in tool input | Guardrails, Datadog AI Guard | Cedar, Steering |
+| SQL injection | Guardrails, Datadog AI Guard | Cedar |
+| Prompt injection in user input | Datadog AI Guard | Cedar, Guardrails, Steering |
+| Jailbreak / data exfiltration | Datadog AI Guard | Cedar, Guardrails |
+| Off-task/low-quality tool use | LLM Steering | Cedar, Guardrails |
+| Argument-level scoping (wrong DB) | Cedar | Guardrails, Steering |
+| Operational policy violation (e.g. rate limits) | Agent Control | Cedar, Steering |
+| Corrective behavioral guidance | Agent Control, LLM Steering | Cedar, Guardrails |
+
+The value is in **composition** — and the pipeline's conflict resolution makes it safe and predictable.
 
 ---
 
-## What This Means for the Cedar Plugin
+## What Would Need to Change in Strands
 
-### Option A: Cedar as a SteeringHandler
+We have implemented a working proof-of-concept in both the Python and TypeScript SDKs (see [Working Demos](#working-demos)). Remaining work, open questions, and status tracking are in [INTERVENTION_TODO.md](./INTERVENTION_TODO.md).
 
-The Cedar plugin could implement the `SteeringHandler` interface, making it mechanically compatible with the steering system. This would mean:
+3. **Does Guide make sense for authorization?** When Cedar denies a tool call, should the agent ever retry with different arguments (Guide behavior)? For argument scoping, Guide might be useful: "You can't query the secrets database, but you can query analytics or reporting." This could be a Cedar-specific decision — return Guide for argument violations, Deny for role violations.
 
-- Cedar becomes one handler in a chain, not a standalone plugin
-- The framework handles ordering and conflict resolution
-- Other steering handlers can compose with Cedar naturally
+4. **Who owns context enrichment?** Steering has `LedgerProvider` for tool history. Cedar needs principal identity from `invocation_state`. Should the framework provide a shared context pipeline, or should each handler enrich its own?
 
-```typescript
-class CedarAuthHandler extends SteeringHandler {
-  evaluateToolCall(context: InterventionContext): ToolSteeringAction {
-    const result = cedar.isAuthorized({
-      principal: context.principal,
-      action: { type: "Action", id: `use_tool::${context.tool.name}` },
-      resource: { type: "Tool", id: context.tool.name },
-      context: this.buildCedarContext(context),
-      policies: this.policies,
-      entities: this.entities,
-    });
-
-    if (result.response.decision === "allow") {
-      return { type: "proceed" };
-    } else {
-      // Deny, not Guide — authorization failures shouldn't trigger retries
-      return { type: "deny", reason: `Not authorized: ...` };
-    }
-  }
-}
-```
-
-**Pros:**
-- Composable with other handlers
-- Framework handles the intervention lifecycle
-- Single audit stream for all intervention types
-
-**Cons:**
-- Steering is currently Python-only; the Cedar plugin is TypeScript
-- Steering's `ToolSteeringAction` doesn't have a `Deny` variant (only Proceed/Guide/Interrupt) — the distinction between Guide ("try differently") and Deny ("you can't, period") matters for authorization
-- Coupling to Strands' steering API when the Cedar plugin could work with other agent frameworks too
-
-### Option B: A New Shared Primitive (Recommended for Exploration)
-
-Rather than fitting Cedar into Strands' existing steering, propose a new **Intervention** primitive at a lower level that both steering and authorization implement. This would be:
-
-- **Framework-level**: Part of the Strands SDK plugin interface, not specific to steering
-- **Action-type aware**: Supports Proceed, Guide, Deny, and Interrupt as distinct actions
-- **Engine-agnostic**: The evaluation function is a black box — Cedar, LLM, Datadog, or custom
-- **Composable**: The framework evaluates handlers in order with defined conflict resolution
-
-This approach doesn't force Cedar to become a "steering handler" (which implies content-awareness and LLM evaluation). Instead, steering handlers and authorization handlers are both **intervention handlers** — different species of the same genus.
-
-### What Would Need to Change in Strands
-
-For this to work, Strands would need:
-
-1. A generalized `InterventionHandler` interface alongside (or replacing) `SteeringHandler`
-2. A `Deny` action type in addition to Proceed/Guide/Interrupt
-3. A composition mechanism that evaluates multiple handlers with defined ordering and conflict resolution
-4. TypeScript support (steering is currently Python-only)
-
----
-
-## Working Demo
-
-A runnable proof-of-concept lives at [`js/strands-cedar-auth/intervention.ts`](../js/strands-cedar-auth/intervention.ts). It implements the full intervention primitive with four concrete handlers composed in a pipeline:
-
-```
-npx tsx intervention.ts
-```
-
-### What the Demo Shows
-
-The pipeline evaluates handlers in cost/determinism order — **Cedar Auth** (sub-ms, formal) first, then **Operational Control** (sub-ms, simple rules), then **Content Guardrail** (pattern matching), then **LLM Steering** (mocked; would be an LLM call in production). Each handler only runs if the previous ones returned Proceed.
-
-**10 scenarios demonstrate the layering:**
-
-| Scenario | Handler that decides | Action |
-|----------|---------------------|--------|
-| Admin queries secrets DB | Cedar Auth | Proceed (admin allowed) |
-| Analyst queries secrets DB | Cedar Auth | **Deny** (analyst restricted to analytics/reporting) |
-| Analyst queries analytics | All four | Proceed (everyone agrees) |
-| Admin deletes record in production | Operational Control | **Deny** (Cedar allows admin, but ops blocks prod deletes) |
-| Admin deletes record in staging | All four | Proceed |
-| Analyst sends email with PII | Content Guardrail | **Deny** (SSN pattern detected — Cedar+ops allowed it) |
-| Analyst sends short email | LLM Steering | **Guide** ("email too short, add context") |
-| Analyst sends proper email | All four | Proceed |
-| Unknown user (no roles) | Cedar Auth | **Deny** (default-deny, no matching permit) |
-| Analyst query with SQL injection | Content Guardrail | **Deny** (Cedar allowed the tool, guardrail caught content) |
-
-### Key Insight from the Demo
-
-No single handler catches everything. Cedar catches unauthorized access but not PII or SQL injection. Guardrails catch dangerous content but don't know who the user is. Operational controls catch environment violations but not argument-level restrictions. LLM steering catches task-relevance issues none of the others consider. The value is in composition — and the pipeline's conflict resolution (deny wins, guide accumulates) makes composition safe and predictable.
-
-### What Cedar Uniquely Provides (vs. Agent Control)
-
-The demo highlights a question: what does Cedar add that simple agent control rules can't? The answer is visible in the scenarios:
-
-- **Identity-aware decisions**: The same tool (`query_database`) gives different results for `alice` (admin) vs `bob` (analyst). Operational controls don't distinguish principals.
-- **Argument-level scoping per role**: Admin can query `secrets`, analyst cannot — same tool, different permissions based on who you are AND what you're querying.
-- **Formal verification**: You can statically prove "no principal outside Role::admin can query the secrets database" without running the agent. No other handler in the pipeline offers this.
-
-Simple operational controls (rate limits, env gating) are sufficient when identity doesn't matter. Cedar's value is specifically the **identity x action x arguments** matrix plus static analysis.
-
----
-
-## Open Questions
-
-1. **Is steering the right home for this?** Steering has connotations of "guidance" — nudging the agent in a direction. Authorization is not guidance; it's enforcement. Should they share an interface, or should there be a higher-level `InterventionHandler` that both implement?
-
-2. **Does Guide make sense for authorization?** When Cedar denies a tool call, should the agent retry with different arguments (Guide behavior), or should it accept the denial and explain it to the user (Deny behavior)? For some cases (argument scoping), Guide might actually be useful: "You can't query the secrets database, but you can query analytics or reporting."
-
-3. **Latency budget.** Stacking multiple intervention handlers adds latency. Cedar is sub-ms, but adding an LLM steering call on every tool invocation is expensive. Should the framework support conditional evaluation (e.g., only run LLM steering if cheaper handlers all returned Proceed)?
-
-4. **Who owns the context?** Steering's `LedgerProvider` and Cedar's context builder both gather information from the same hook events. Should there be a shared context object that all handlers read from, or should each handler maintain its own?
-
-5. **Cross-framework portability.** Cedar's value proposition includes working across agent frameworks (not just Strands). Tightly coupling to Strands' intervention primitive could limit this. Should the Cedar plugin implement a framework-agnostic interface that adapts to Strands' intervention system?
-
-6. **TypeScript parity.** Strands Steering is Python-only today. The Cedar plugin is TypeScript. Any unified primitive needs to work in both languages, or the Cedar plugin would need a Python port first.
+5. **Cross-framework portability.** The `InterventionHandler` interface should be simple enough that Cedar can implement it for Strands, LangGraph, AutoGen, etc. with thin adapters.

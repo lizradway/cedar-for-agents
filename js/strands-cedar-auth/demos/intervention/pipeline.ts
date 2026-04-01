@@ -1,9 +1,29 @@
 /**
  * Intervention Primitive — a unified abstraction for agent control.
  *
- * Cedar auth, LLM steering, content guardrails, and operational controls
- * all follow the same pattern: gather context, evaluate, act, log.
- * This module defines that pattern as a composable primitive.
+ * "Intervention" is the primitive. Cedar auth, LLM steering, content guardrails,
+ * and operational controls all implement InterventionHandler — the shared interface.
+ * An InterventionPipeline composes them with ordering and conflict resolution.
+ *
+ * Architecture:
+ *   InterventionHandler  (the shared interface)
+ *     ├── CedarAuthHandler           (sub-ms, Cedar WASM policy evaluation)
+ *     ├── OperationalControlHandler   (sub-ms, rate limits + env gating)
+ *     ├── ContentGuardrailHandler     (sub-ms, regex pattern matching)
+ *     └── MockLLMSteeringHandler      (simulates Strands LLMSteeringHandler)
+ *
+ *   InterventionPipeline  (composes handlers → evaluates in order)
+ *
+ *   This is an alternative approach we explored. Today, each concern is a
+ *   separate plugin with no shared interface. If Strands made interventions
+ *   first-class, this simplifies to:
+ *     Agent({ tools: [...], interventions: [cedar, guardrails, steering] })
+ *
+ * The MockLLMSteeringHandler uses deterministic rules because the Strands TS SDK
+ * doesn't have steering yet. The Python demo uses the real LLMSteeringHandler
+ * making actual LLM calls — see python/strands-cedar-auth/demos/intervention_pipeline.py.
+ *
+ * See docs/STEERING_PRIMITIVE_EXPLORATION.md for the full design rationale.
  *
  * Demo usage:
  *   npx tsx intervention.ts
@@ -60,7 +80,7 @@ export interface InterventionRecord {
 }
 
 // ============================================================================
-// 2. Handler Interface
+// 2. Handler Interface — the primitive that all handlers implement
 // ============================================================================
 
 /**
@@ -68,6 +88,10 @@ export interface InterventionRecord {
  *
  * Handlers are engine-agnostic — Cedar policies, LLM judges, pattern matchers,
  * and simple rule checks all implement this same interface.
+ *
+ * In the Python demo, Strands' real LLMSteeringHandler is wrapped in an adapter
+ * that implements this interface. If Strands made InterventionHandler native,
+ * LLMSteeringHandler would implement it directly.
  */
 export interface InterventionHandler {
   readonly name: string;
@@ -89,10 +113,13 @@ export interface InterventionHandler {
  * Evaluates handlers in registration order (cheapest/most-deterministic first).
  *
  * Conflict resolution:
- *   - Any Deny    → final Deny (short-circuits)
+ *   - Any Deny    → final Deny (short-circuits, skips remaining handlers)
  *   - Any Interrupt → Interrupt (if no deny)
  *   - Any Guide   → Guide with accumulated feedback
  *   - Otherwise   → Proceed
+ *
+ * If Strands made interventions first-class, this logic would live in the
+ * framework and users wouldn't need to build it themselves.
  */
 export class InterventionPipeline {
   private handlers: InterventionHandler[] = [];
@@ -155,15 +182,12 @@ export class InterventionPipeline {
   ): InterventionAction {
     if (actions.length === 0) return { type: "proceed" };
 
-    // Deny wins (already short-circuited above, but just in case)
     const deny = actions.find((a) => a.action.type === "deny");
     if (deny) return deny.action;
 
-    // Interrupt next
     const interrupt = actions.find((a) => a.action.type === "interrupt");
     if (interrupt) return interrupt.action;
 
-    // Accumulate guide feedback
     const guides = actions.filter((a) => a.action.type === "guide");
     if (guides.length > 0) {
       const feedback = guides
@@ -196,7 +220,7 @@ export class InterventionPipeline {
 }
 
 // ============================================================================
-// 4. Handler Implementations
+// 4. Handler Implementations — each implements InterventionHandler
 // ============================================================================
 
 // --- Cedar Authorization Handler ---
@@ -250,7 +274,6 @@ export class CedarAuthHandler implements InterventionHandler {
       });
     }
 
-    // Build Cedar context from tool input + environment
     const cedarCtx: Record<string, cedar.CedarValueJson> = {};
     for (const [k, v] of Object.entries(ctx.tool.input)) {
       if (
@@ -330,8 +353,6 @@ export class CedarAuthHandler implements InterventionHandler {
       }
     }
     for (const r of this.config.restrictions) allTools.add(r.tool);
-    // Wildcard roles need Tool entities created on-the-fly; we add
-    // a broad set here so Cedar has entities to match against.
     for (const t of allTools) {
       entities.push({
         uid: { type: "Tool", id: t },
@@ -426,7 +447,6 @@ export class OperationalControlHandler implements InterventionHandler {
     const toolName = ctx.tool?.name;
     if (!toolName) return undefined;
 
-    // Environment gating
     if (ctx.environment) {
       for (const [env, tools] of this.envDenials) {
         if (ctx.environment === env && tools.includes(toolName)) {
@@ -438,7 +458,6 @@ export class OperationalControlHandler implements InterventionHandler {
       }
     }
 
-    // Rate limiting
     if (toolName in this.rateLimits) {
       const count = this.callCounts[toolName] ?? 0;
       if (count >= this.rateLimits[toolName]) {
@@ -454,7 +473,11 @@ export class OperationalControlHandler implements InterventionHandler {
   }
 }
 
-// --- LLM Steering Handler (simulated — would call an LLM in production) ---
+// --- Mock LLM Steering Handler ---
+// Simulates what Strands' real LLMSteeringHandler does: evaluate tool calls
+// against natural-language rules and return Guide/Proceed. Uses deterministic
+// rules because the Strands TS SDK doesn't have steering yet.
+// See the Python demo for real LLM steering via StrandsSteeringAdapter.
 
 export class MockLLMSteeringHandler implements InterventionHandler {
   readonly name = "llm-steering";
@@ -476,8 +499,6 @@ export class MockLLMSteeringHandler implements InterventionHandler {
   }
 
   evaluateToolCall(ctx: InterventionContext): InterventionAction | undefined {
-    // In production, this would send ctx + systemPrompt to an LLM.
-    // For the demo, we use deterministic rule matching.
     for (const rule of this.rules) {
       if (rule.match(ctx)) {
         return { type: "guide", feedback: rule.feedback };
@@ -546,7 +567,6 @@ function demo() {
         name: "pii-detection",
         check: (ctx) => {
           const input = JSON.stringify(ctx.tool?.input ?? {});
-          // Naive SSN pattern for demo
           if (/\d{3}-\d{2}-\d{4}/.test(input)) {
             return {
               type: "deny",
@@ -572,7 +592,7 @@ function demo() {
     ]),
   );
 
-  // 4. LLM Steering — expensive, non-deterministic (mocked here)
+  // 4. LLM Steering — mocked here; see Python demo for real LLMSteeringHandler
   pipeline.add(
     new MockLLMSteeringHandler({
       systemPrompt:
@@ -716,8 +736,15 @@ function demo() {
   // --- Run ---
 
   console.log("=".repeat(72));
-  console.log("  Intervention Primitive Demo");
-  console.log("  Pipeline: Cedar Auth -> Operational Control -> Content Guardrail -> LLM Steering");
+  console.log("  Intervention Primitive Demo (TypeScript)");
+  console.log(
+    "  Pipeline: Cedar Auth -> Operational Control -> Content Guardrail -> LLM Steering",
+  );
+  console.log();
+  console.log("  All handlers implement InterventionHandler.");
+  console.log(
+    "  LLM steering is mocked; see Python demo for real LLMSteeringHandler.",
+  );
   console.log("=".repeat(72));
 
   for (const s of scenarios) {
@@ -778,6 +805,26 @@ function demo() {
       `  [${entry.handler.padEnd(20)}] ${(entry.toolName ?? "").padEnd(18)} ${(entry.principal ?? "").padEnd(20)} ${action}`,
     );
   }
+
+  // --- Proposed first-class API ---
+
+  console.log(`\n${"=".repeat(72)}`);
+  console.log(
+    "  This demo uses InterventionPipeline — an alternative approach we explored.",
+  );
+  console.log(
+    "  If Strands made interventions first-class, this simplifies to:",
+  );
+  console.log();
+  console.log("    const agent = new Agent({");
+  console.log("      tools: [query_database, send_email],");
+  console.log("      interventions: [cedar, guardrails, steering],");
+  console.log("    });");
+  console.log();
+  console.log(
+    "  See docs/STEERING_PRIMITIVE_EXPLORATION.md for the full proposal.",
+  );
+  console.log("=".repeat(72));
 }
 
 demo();

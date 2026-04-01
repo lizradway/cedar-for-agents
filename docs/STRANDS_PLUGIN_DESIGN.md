@@ -43,7 +43,7 @@
 
 ## Problem
 
-AI agents invoke tools on behalf of users, but today there is no standard way to control *which* user can invoke *which* tool. Developers either hard-code permission checks inside each tool or skip per-tool auth entirely. This leads to authorization logic that is scattered, hard to audit, and impossible to analyze statically. As agents gain access to higher-stakes tools (database writes, API calls, file deletion), the gap between "what the model can do" and "what the user is allowed to do" becomes a security liability. No other agent framework offers a production-grade authorization story out of the box.
+AI agents invoke tools on behalf of users, but today there is no standard way to control *which* user can invoke *which* tool. Developers either hard-code permission checks inside each tool or skip per-tool auth entirely. This leads to authorization logic that is scattered, hard to audit, and impossible to analyze statically. As agents gain access to higher-stakes tools (database writes, API calls, file deletion), the gap between "what the model can do" and "what the user is allowed to do" becomes a security liability. No other agent framework offers a production-grade authorization story out of the box. This isn't a theoretical gap — the Strands community is [actively asking how to handle it](https://www.reddit.com/r/AI_Agents/comments/1rc4f8k/how_are_you_guys_handling_security_for_strands/), with practitioners converging on the same conclusion: "the model proposes, the system enforces."
 
 Two examples where this surfaces today:
 
