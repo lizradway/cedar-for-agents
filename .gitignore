@@ -5,3 +5,7 @@ js/strands-cedar-auth/node_modules
 python/strands-cedar-auth/demos/__pycache__/
 docs/INTERVENTION_TODO.md
 docs/OPEN_QUESTIONS.md
+
+# Local SDK forks (push changes to their own repos, not this one)
+strands-agents-sdk/
+strands-agents-sdk-ts/

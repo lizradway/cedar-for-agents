@@ -506,12 +506,12 @@ const agent = new Agent({
 })
 ```
 
-**SDK Changes Made:**
+**SDK Forks (interventions branch):**
 
-| SDK | Files Modified/Created |
-|-----|----------------------|
-| Python (`strands-agents-sdk/`) | `src/strands/interventions/` (handler.py, actions.py, registry.py, \_\_init\_\_.py), `src/strands/agent/agent.py` (added `interventions` param), `src/strands/__init__.py` (exports) |
-| TypeScript (`strands-agents-sdk-ts/`) | `src/interventions/` (handler.ts, actions.ts, registry.ts, index.ts), `src/agent/agent.ts` (added `interventions` param), `src/index.ts` (exports) |
+| SDK | Fork | Key Files |
+|-----|------|-----------|
+| Python | [lizradway/sdk-python@interventions](https://github.com/lizradway/sdk-python/tree/interventions) | `src/strands/interventions/` (handler.py, actions.py, registry.py, \_\_init\_\_.py), `src/strands/agent/agent.py`, `src/strands/__init__.py` |
+| TypeScript | [lizradway/sdk-typescript@interventions](https://github.com/lizradway/sdk-typescript/tree/interventions) | `src/interventions/` (handler.ts, actions.ts, registry.ts, index.ts), `src/agent/agent.ts`, `src/index.ts` |
 
 Both implementations follow the same pattern:
 1. `InterventionHandler` interface: `name` + `handles()` + `evaluate(event)`
