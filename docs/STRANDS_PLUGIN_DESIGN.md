@@ -16,7 +16,7 @@
   - [Config file (`from_config`)](#config-file-from_config)
   - [Full Cedar (advanced)](#full-cedar-advanced)
 - [Implementation](#implementation)
-- Appendices: [A (Design Decisions)](#appendix-a-key-design-decisions) · [B (Framework Identity)](#appendix-b-how-other-frameworks-handle-identity) · [C (Runtime Conditions)](#appendix-c-runtime-condition-examples) · [D (Control Plugins)](#appendix-d-comparison-with-existing-control-plugins) · [E (Tool-Set Swapping)](#appendix-e-tool-set-swapping-vs-cedar) · [F (Resource Resolver)](#appendix-f-resource-resolver-formats) · [G (Verifier/CI)](#appendix-g-verifier-api-and-cicd-integration) · [H (Full Cedar)](#appendix-h-full-cedar-examples) · [I (Cedar vs. OPA)](#appendix-i-cedar-vs-opa) · [J (Model Mapping)](#appendix-j-cedar-model-mapping) · [K (Builder→Cedar)](#appendix-k-builder-to-cedar-mapping)
+- Appendices: [A (Design Decisions)](#appendix-a-key-design-decisions) · [B (Framework Identity)](#appendix-b-how-other-frameworks-handle-identity) · [C (Runtime Conditions)](#appendix-c-runtime-condition-examples) · [D (Control Plugins)](#appendix-d-comparison-with-existing-control-plugins) · [E (Tool-Set Swapping)](#appendix-e-tool-set-swapping-vs-cedar) · [F (Resource Resolver)](#appendix-f-resource-resolver-formats) · [G (Verifier/CI)](#appendix-g-verifier-api-and-cicd-integration) · [H (Full Cedar)](#appendix-h-full-cedar-examples) · [I (Cedar vs. OPA)](#appendix-i-cedar-vs-opa) · [J (Cedar Under the Hood)](#appendix-j-cedar-model-mapping)
 
 <details>
 <summary><h2>Definitions</h2></summary>
@@ -94,7 +94,7 @@ With tool-set swapping, the person writing the API router / agent factory is enc
 - **Permissions aren't versionable as a standalone artifact** — they're scattered across constructors and if-statements
 - **No static analysis** — you can't ask "which roles can reach `delete_record`?" without tracing through your code
 
-Cedar makes permissions a **separate artifact** — a `.cedar` file, a `.toml` config, or a `.json` file that security teams can read, review, and analyze without understanding your Python codebase. This is the same reason web apps use IAM policies instead of hard-coding `if user.role == "admin"` in every route handler.
+Cedar makes permissions a **separate artifact** — a `.cedar` file, a `.toml` config, or a `.json` file that security teams can read, review, and analyze without understanding your Python codebase. This is the same reason web apps use authorization middleware instead of hard-coding `if user.role == "admin"` in every route handler.
 
 #### 5. One policy set for many principals
 
@@ -118,7 +118,7 @@ permit (
 };
 ```
 
-This works regardless of which agent in the chain actually calls the tool — the policy follows the user, not the agent.
+This works today without SDK changes — Strands' `Graph` and `Swarm` multi-agent primitives already propagate `invocation_state` to each sub-agent's tool calls, so the Cedar plugin in each sub-agent sees the original user's identity automatically.
 
 See [Appendix E](#appendix-e-tool-set-swapping-vs-cedar) for a side-by-side comparison table. **The rule of thumb**: If your permission model is "role X gets tools A, B, C" and nothing more, use tool-set swapping. If you need argument-level gating, runtime conditions, static analysis, or multi-agent permission propagation, you need a policy engine.
 
@@ -136,13 +136,9 @@ Your API gateway authorized the chat message. IAM allows the agent to call EC2 a
 
 #### The principal problem
 
-IAM authorizes the **agent process**. Not the user.
+**Shared credentials (the common case):** Your agent has one IAM role. Ten users talk to it. When Alice (admin) asks the agent to delete a record and Bob (intern) asks the same, IAM sees the exact same principal making the exact same `DynamoDB:DeleteItem` call. Both succeed. This is the same reason your web app doesn't rely solely on database credentials — the app connects to Postgres as one service account, and nobody says "just use Postgres roles for user auth." You need an authorization layer that knows about users.
 
-Your agent has one IAM role. Ten users talk to it. When Alice (admin) asks the agent to delete a record and Bob (intern) asks the agent to delete a record, IAM sees the exact same principal making the exact same `DynamoDB:DeleteItem` call. Both succeed.
-
-This is the common case when the agent uses its own credentials. Some apps store per-user credentials (OAuth tokens, API keys) and make calls as the user — in that case, the service does see the right principal. But even with per-user credentials, IAM condition keys don't map to "which tool did the agent choose to call" or "what arguments did it decide to pass." Per-user credentials scope *which APIs* the agent can hit, not *which tools* the agent can choose or *how* it uses them. IAM alone can't enforce argument-level restrictions, rate limits, or time windows at the tool-call level — that requires an authorization layer inside the agent.
-
-This is the same reason your web app doesn't rely solely on database credentials. The app connects to Postgres as one service account. Nobody says "just use Postgres roles for user auth" — the database sees one principal, not your users. You need an authorization layer that knows about users. For agents, that layer sits at the tool-call boundary.
+**Per-user credentials:** Some apps store per-user credentials (OAuth tokens, API keys) and make calls as the user — the service does see the right principal. But IAM condition keys don't map to "which tool did the agent choose to call" or "what arguments did it decide to pass." Per-user credentials scope *which APIs* the agent can hit, not *which tools* the agent can choose or *how* it uses them. IAM alone can't enforce argument-level restrictions, rate limits, or time windows at the tool-call level — that requires an authorization layer inside the agent.
 
 #### The enforcement gap
 
@@ -195,7 +191,7 @@ The plugin exists for the gap between "my API has auth" and "the agent is making
 
 ## Proposal
 
-**`CedarAuthPlugin`** is a first-party Strands plugin that uses the [Cedar policy language](https://github.com/cedar-policy/cedar) to enforce fine-grained, auditable authorization over every tool call an agent makes. Cedar is purpose-built for authorization: it is fast (bounded-latency evaluation), analyzable (automated reasoning can prove policy properties), and expressive enough to cover RBAC, ABAC, and ReBAC models in a single policy set.
+**`CedarAuthPlugin`** is a Cedar-native Strands plugin that uses the [Cedar policy language](https://github.com/cedar-policy/cedar) to enforce fine-grained, auditable authorization over every tool call an agent makes. Cedar is purpose-built for authorization: it is fast (bounded-latency evaluation), analyzable (automated reasoning can prove policy properties), and expressive enough to cover RBAC, ABAC, and ReBAC models in a single policy set.
 
 ### How It Works
 
@@ -238,11 +234,13 @@ The plugin reads `event.invocation_state` inside `BeforeToolCallEvent`, construc
 
 **What the plugin needs from you:** Pass `user_id` and `roles` in `invocation_state`. For non-standard identities, use the builder's `.principal(key, type)` or a Full Cedar custom `principal_resolver`. See the Developer API section for details.
 
+**Fail-closed by design:** If `invocation_state` is missing identity (no `user_id`, no matching key), the principal resolver raises an error and the plugin cancels the tool call with a denial message. The tool never executes. There is no fail-open path — missing identity is treated the same as an explicit deny.
+
 #### Why Cedar
 
 Cedar is purpose-built for authorization — `principal`, `action`, `resource`, and `context` are language primitives, not conventions. It provides formal verification (prove policy properties mathematically), bounded-latency evaluation (no recursion, no loops), and a natural path to AWS-managed authorization via Amazon Verified Permissions. We evaluated OPA/Rego as the main alternative; see [Appendix I](#appendix-i-cedar-vs-opa) for the full comparison. The plugin architecture is engine-agnostic, so an OPA plugin is feasible as a community contribution or something we build ourselves if there's demand.
 
-The plugin evaluates policies locally via `cedarpy` (Rust-backed Python bindings) — in-process, zero-network, microsecond latency. Cedar's Rust core also compiles to WASM natively, so policies are directly portable to a TypeScript/WASM runtime. For future dynamic entity/policy loading (e.g., fetching from S3 or a database at evaluation time), [`cedar-local-agent`](https://github.com/cedar-policy/cedar-local-agent) provides a Rust crate with async pluggable provider traits and caching — a natural building block if we outgrow static policy loading. Building this plugin led to a further investigation into a top-level [`InterventionHandler`](./INTERVENTION_EXPLORATION.md) primitive in the Strands SDK, where Cedar authorization, LLM steering, and other control layers would share a unified interface.
+The plugin evaluates policies locally via `cedarpy` (Rust-backed Python bindings) — in-process, zero-network, microsecond latency. Cedar's Rust core also compiles to WASM natively, so policies are directly portable to a TypeScript/WASM runtime. For future dynamic entity/policy loading (e.g., fetching from S3 or a database at evaluation time), [`cedar-local-agent`](https://github.com/cedar-policy/cedar-local-agent) provides a Rust crate with async pluggable provider traits and caching — a natural building block if we outgrow static policy loading. Building this plugin led to a further investigation into [agent middleware](./INTERVENTION_EXPLORATION.md) — a first-class pipeline in the Strands SDK where Cedar authorization, LLM steering, guardrails, and other control layers share a unified interface, ordered evaluation, and short-circuiting (e.g., Cedar denies in sub-ms and the expensive LLM steering call never runs). The same pattern as HTTP middleware, adapted for the agent lifecycle's multiple intercept points (before/after tool calls, before/after model calls).
 
 #### Authorization Request
 
@@ -274,7 +272,7 @@ tool call: query_database(database="analytics")
 
 **3. State enrichments** — added when the relevant builder methods are used:
 - `environment` — read from `invocation_state["environment"]`, for `.deny_tools_in_env()`
-- `session_call_count` — the plugin's internal counter for this tool in this session, for `.rate_limit()`
+- `session_call_count` — the plugin's internal counter for this tool in this session, for `.rate_limit()`. Note: counters are in-memory and per-process — they reset on restart and are not shared across horizontally scaled instances. This makes rate limiting a best-effort guardrail, not a hard security boundary. For strict rate enforcement, use an external counter (e.g., Redis) and pass the count via `invocation_state`.
 
 The full context for a `query_database` call looks like:
 
@@ -393,7 +391,7 @@ agent("query the analytics db", invocation_state={
 })
 ```
 
-Each builder method generates the corresponding Cedar policy under the hood. The customer never writes Cedar, but it's all Cedar underneath — so the policies are auditable, analyzable, and composable. See [Appendix K](#appendix-k-builder-to-cedar-mapping) for what each method generates.
+Each builder method generates the corresponding Cedar policy under the hood. The customer never writes Cedar, but it's all Cedar underneath — so the policies are auditable, analyzable, and composable. See [Appendix J](#appendix-j-cedar-model-mapping) for what each method generates.
 
 ### Config file (`from_config`)
 
@@ -842,7 +840,7 @@ OPA (Open Policy Agent) with Rego is the most widely adopted policy engine — b
 </details>
 
 <details>
-<summary><strong>Appendix J: Cedar Model Mapping</strong></summary>
+<summary><strong>Appendix J: Cedar Under the Hood</strong></summary>
 
 Strands concepts map onto Cedar's authorization model:
 
@@ -889,10 +887,7 @@ forbid (
 };
 ```
 
-</details>
-
-<details>
-<summary><strong>Appendix K: Builder-to-Cedar Mapping</strong></summary>
+**Builder-to-Cedar mapping:**
 
 | Builder method | Generated Cedar |
 |---------------|----------------|

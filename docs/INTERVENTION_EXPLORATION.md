@@ -9,7 +9,7 @@
 - [Proposed API: `Agent(interventions=[...])`](#proposed-api-agentinterventions)
 - [Composability](#composability)
 - [Working Demos](#working-demos)
-- Appendices: [A (Concrete Instances)](#appendix-a-concrete-instances) · [B (Interface Design Rationale)](#appendix-b-interface-design-rationale) · [C (Coverage Matrix)](#appendix-c-coverage-matrix) · [D (Demo Details)](#appendix-d-demo-details)
+- Appendices: [A (Concrete Instances)](#appendix-a-concrete-instances) · [B (Interface Design Rationale)](#appendix-b-interface-design-rationale) · [C (Coverage Matrix)](#appendix-c-coverage-matrix) · [D (Userland Workaround)](#appendix-d-interventionpipeline-userland-workaround) · [E (Naming)](#appendix-e-naming-alternatives)
 
 ---
 
@@ -239,7 +239,7 @@ Five handlers across all 4 event types, 10 scenarios including prompt injection,
 | Python | [lizradway/sdk-python@interventions](https://github.com/lizradway/sdk-python/tree/interventions) |
 | TypeScript | [lizradway/sdk-typescript@interventions](https://github.com/lizradway/sdk-typescript/tree/interventions) |
 
-See [Appendix D](#appendix-d-demo-details) for run instructions and the InterventionPipeline userland workaround.
+See [Appendix D](#appendix-d-interventionpipeline-userland-workaround) for a userland workaround that works today without SDK changes.
 
 ---
 
@@ -347,33 +347,42 @@ The event-driven approach (`handles()` + `evaluate()`) is stable — handlers op
 </details>
 
 <details>
-<summary><strong>Appendix D: Demo Details</strong></summary>
+<summary><strong>Appendix D: InterventionPipeline — Userland Workaround</strong></summary>
 
-### Native SDK Implementation
+Before `Agent(interventions=[...])` lands upstream, the same composition can be achieved in userland by wrapping multiple `InterventionHandler`s into an `InterventionPipeline` that exposes itself as a single Strands `Plugin`. This gives you ordered evaluation, short-circuiting, and a unified audit log today — no SDK fork required.
 
-Both SDK forks add `InterventionHandler`, `InterventionRegistry`, and the `Agent(interventions=[...])` parameter:
-
-| SDK | Fork | Key Files |
-|-----|------|-----------|
-| Python | [lizradway/sdk-python@interventions](https://github.com/lizradway/sdk-python/tree/interventions) | `src/strands/interventions/`, `src/strands/agent/agent.py`, `src/strands/__init__.py` |
-| TypeScript | [lizradway/sdk-typescript@interventions](https://github.com/lizradway/sdk-typescript/tree/interventions) | `src/interventions/`, `src/agent/agent.ts`, `src/index.ts` |
-
-```bash
-# Python
-cd strands-agents-sdk && pip install -e .
-pip install cedarpy
-python demos/intervention/native.py
-
-# TypeScript
-cd strands-agents-sdk-ts && npm install && npx tsc -p src/tsconfig.json
-npx tsx demos/intervention/native.ts
-```
-
-### InterventionPipeline — Userland Workaround
-
-Composes handlers into an `InterventionPipeline` that wraps as a single Strands Plugin. Works today without SDK changes.
+The pipeline registers one hook callback per event type, iterates handlers in order, and applies the same short-circuit rules (Deny stops immediately, Guide accumulates, Interrupt pauses).
 
 - **Python** — [`demos/intervention/pipeline.py`](../python/strands-cedar-auth/demos/intervention/pipeline.py) — Real agent with real `LLMSteeringHandler` making actual LLM calls
 - **TypeScript** — [`demos/intervention/pipeline.ts`](../js/strands-cedar-auth/demos/intervention/pipeline.ts) — Mock steering (Strands TS SDK doesn't have steering yet)
+
+```bash
+# Python
+pip install cedarpy strands-agents strands-agents-builder
+python python/strands-cedar-auth/demos/intervention/pipeline.py
+
+# TypeScript
+cd js/strands-cedar-auth && npm install
+npx tsx demos/intervention/pipeline.ts
+```
+
+</details>
+
+<details>
+<summary><strong>Appendix E: Naming Alternatives</strong></summary>
+
+"Intervention" is the working name, but it carries a connotation of something going wrong (medical intervention, addiction intervention). Authorization isn't corrective — it's a gate. Alternatives worth considering:
+
+| Name | API | Pros | Cons |
+|---|---|---|---|
+| **Intervention** | `Agent(interventions=[...])` | Descriptive — something intervenes in the loop | Implies misbehavior. Unfamiliar as a CS primitive |
+| **Middleware** | `Agent(middleware=[...])` | Instantly familiar to every web engineer. Accurate | May imply single-request linear chain, not multi-event |
+| **Guard** | `Agent(guards=[...])` | Short, clear, implies protection | Overloaded — Rust `guard`, Python `@guard`, Galileo uses it |
+| **Policy** | `Agent(policies=[...])` | Accurate for Cedar/OPA | Doesn't fit LLM steering — steering isn't really "policy" |
+| **Control** | `Agent(controls=[...])` | Neutral | Vague. "Agent control" is already Galileo's product name |
+| **Gate** | `Agent(gates=[...])` | Clear metaphor — things pass through or don't | Implies binary allow/deny, doesn't capture Guide/Interrupt |
+| **Interceptor** | `Agent(interceptors=[...])` | Accurate — intercepts events and decides | Java/Spring vibes, slightly dated |
+
+The final name should be decided before any SDK PR.
 
 </details>
