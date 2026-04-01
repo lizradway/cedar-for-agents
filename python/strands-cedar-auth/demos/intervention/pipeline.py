@@ -23,7 +23,7 @@ Run:
     python demos/intervention_pipeline.py
 
 Requires a model provider (default: Bedrock with Claude).
-See docs/STEERING_PRIMITIVE_EXPLORATION.md for the full design rationale.
+See docs/INTERVENTION_EXPLORATION.md for the full design rationale.
 """
 
 from __future__ import annotations
@@ -602,7 +602,7 @@ def demo():
     print("        interventions=[cedar, guardrails, steering],")
     print("    )")
     print()
-    print("  See docs/STEERING_PRIMITIVE_EXPLORATION.md for the full proposal.")
+    print("  See docs/INTERVENTION_EXPLORATION.md for the full proposal.")
     print("=" * 70)
 
 

@@ -23,7 +23,7 @@
  * doesn't have steering yet. The Python demo uses the real LLMSteeringHandler
  * making actual LLM calls — see python/strands-cedar-auth/demos/intervention_pipeline.py.
  *
- * See docs/STEERING_PRIMITIVE_EXPLORATION.md for the full design rationale.
+ * See docs/INTERVENTION_EXPLORATION.md for the full design rationale.
  *
  * Demo usage:
  *   npx tsx intervention.ts
@@ -822,7 +822,7 @@ function demo() {
   console.log("    });");
   console.log();
   console.log(
-    "  See docs/STEERING_PRIMITIVE_EXPLORATION.md for the full proposal.",
+    "  See docs/INTERVENTION_EXPLORATION.md for the full proposal.",
   );
   console.log("=".repeat(72));
 }
