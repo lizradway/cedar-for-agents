@@ -189,36 +189,34 @@ Entities:
 <summary><strong>Appendix C: Consent Flow Diagram</strong></summary>
 
 ```
-Model calls send_email(to="bob@acme.com", subject="Q1")
-    │
-    ▼
-Plugin: BeforeToolCall hook fires
-    │
-    ▼
-Cedar evaluates (no user_consent in context)
-    │
-    ├─ Has permit policy with consent condition? ──► Yes
-    │                                                 │
-    │                                                 ▼
-    │                                          Prompt user: "Approve? [y/n]"
-    │                                                 │
-    │                                          ┌──────┴──────┐
-    │                                          │              │
-    │                                        y/yes          n/no
-    │                                          │              │
-    │                                          ▼              ▼
-    │                                   Re-evaluate       cancel_tool =
-    │                                   with consent      "User denied"
-    │                                          │
-    │                                          ▼
-    │                                   Cedar: ALLOW
-    │                                   Tool executes
-    │
-    ├─ No permit policy at all? ──────► Hard DENY
-    │                                   (install_package)
-    │
-    └─ Permit matches without consent? ► ALLOW
-                                         (search, read_file)
+Model calls a tool
+       │
+       ▼
+Plugin: BeforeToolCall
+       │
+       ▼
+Cedar evaluates request
+       │
+       ├── ALLOW ────────► Tool executes (search, read_file)
+       │
+       └── DENY ─────────► Is this a consent-gated tool?
+                                  │
+                           ┌──────┴──────┐
+                           │             │
+                          No            Yes
+                           │             │
+                           ▼             ▼
+                       Hard DENY    Prompt user: "Approve? [y/n]"
+                    (install_package)     │
+                                  ┌──────┴──────┐
+                                  │             │
+                                 No            Yes
+                                  │             │
+                                  ▼             ▼
+                             cancel_tool   Re-evaluate with consent
+                            "User denied"       │
+                                                ▼
+                                          Tool executes
 ```
 
 </details>
