@@ -16,6 +16,7 @@
   - [Config file (`from_config`)](#config-file-from_config)
   - [Full Cedar (advanced)](#full-cedar-advanced)
 - [Implementation](#implementation)
+- [Future: Intervention Handler Primitive](#future-cedar-as-an-intervention-handler)
 - Appendices: [A (Design Decisions)](#appendix-a-key-design-decisions) · [B (Framework Identity)](#appendix-b-how-other-frameworks-handle-identity) · [C (Runtime Conditions)](#appendix-c-runtime-condition-examples) · [D (Control Plugins)](#appendix-d-comparison-with-existing-control-plugins) · [E (Tool-Set Swapping)](#appendix-e-tool-set-swapping-vs-cedar) · [F (Resource Resolver)](#appendix-f-resource-resolver-formats) · [G (Verifier/CI)](#appendix-g-verifier-api-and-cicd-integration) · [H (Full Cedar)](#appendix-h-full-cedar-examples) · [I (Cedar vs. OPA)](#appendix-i-cedar-vs-opa) · [J (Cedar Under the Hood)](#appendix-j-cedar-model-mapping)
 
 <details>
@@ -243,7 +244,7 @@ Cedar is purpose-built for authorization — `principal`, `action`, `resource`, 
 
 The plugin evaluates policies locally via [`cedarpy`](https://pypi.org/project/cedarpy/) (Rust-backed Python bindings wrapping the official `cedar-policy` crate) — in-process, zero-network, microsecond latency. `cedarpy` is externally maintained, not by the Cedar team; if it falls behind, it's a thin `pyo3` wrapper that's easy to fork, and we have a working WASI fallback (`cedar-wasm-eval`) that eliminates the dependency entirely. For future dynamic entity/policy loading, [`cedar-local-agent`](https://github.com/cedar-policy/cedar-local-agent) provides async pluggable provider traits and caching.
 
-Building this plugin led to a further investigation into [agent middleware](./INTERVENTION_EXPLORATION.md) — a first-class pipeline where Cedar authorization, LLM steering, guardrails, and other control layers share a unified interface, ordered evaluation, and short-circuiting (e.g., Cedar denies in sub-ms and the expensive LLM steering call never runs).
+Building this plugin also led to a broader investigation into Cedar as an [intervention handler](#future-cedar-as-an-intervention-handler) — a first-class pipeline where Cedar, steering, and guardrails share a unified interface with ordered evaluation and short-circuiting.
 
 #### Authorization Request
 
@@ -483,6 +484,14 @@ The plugin belongs in the [`cedar-for-agents`](https://github.com/cedar-policy/c
 Several other projects already use Cedar for agent authorization, including Amazon Bedrock AgentCore Policy and Leash by StrongDM.
 
 All demos run with `pip install cedarpy strands-agents`. See [`DEMO_WALKTHROUGH.md`](./demos/DEMO_WALKTHROUGH.md) (autonomous agent guardrails), [`DEMO_SAAS_WALKTHROUGH.md`](./demos/DEMO_SAAS_WALKTHROUGH.md) (multi-user SaaS), and [`DEMO_CONSENT_WALKTHROUGH.md`](./demos/DEMO_CONSENT_WALKTHROUGH.md) (tool consent — allow/deny/requires-approval) for worked examples.
+
+## Future: Intervention Handler Primitive
+
+Today, the Cedar plugin integrates with Strands via the `Plugin` interface — `@hook` decorators that limit Cedar to a binary Allow/Deny outcome. Building this plugin led to a broader investigation into a unified [Intervention primitive](./INTERVENTION_EXPLORATION.md) where Cedar authorization, LLM steering, content guardrails, and operational controls all implement the same `InterventionHandler` interface with a shared action vocabulary: **Proceed**, **Deny**, **Guide**, and **Interrupt**.
+
+The value of a shared primitive is that today each control layer — Cedar, steering, Galileo Agent Control, Datadog AI Guard — is a standalone plugin with its own interface, no ordering guarantees, and no unified audit trail. Galileo already ships as *two* plugins (`AgentControlPlugin` for deny, `AgentControlSteeringHandler` for guide) because Strands lacks a unified way to express both. A first-class intervention interface fixes this: handlers declare which events they care about, return a typed action, and the framework owns ordering, short-circuiting, and audit. Cedar evaluates in sub-ms and short-circuits the pipeline before expensive LLM steering runs. Guardrails and operational controls slot in between. Every handler logs to the same audit stream.
+
+For Cedar specifically, the intervention interface adds **richer actions** — returning `Interrupt` for consent-gated tools instead of a hard `Deny`. The consent pattern, where high-stakes tools pause for human approval via the Strands SDK's native interrupt system, is a concrete example of what this enables. See [`DEMO_CONSENT_WALKTHROUGH.md`](./demos/DEMO_CONSENT_WALKTHROUGH.md) for the full walkthrough, and the [Intervention Exploration](./INTERVENTION_EXPLORATION.md) for the design rationale, proposed API, and working demos.
 
 <details>
 <summary><strong>Appendix A: Key Design Decisions</strong></summary>
