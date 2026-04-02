@@ -209,10 +209,14 @@ CedarAuthHandler.evaluate()
        │
        ▼
 Cedar evaluates request
+(user_consent not in context)
        │
        ├── ALLOW ────────► return Proceed ──► Tool executes
+       │                   (search, read_file — unconditional permit)
        │
        └── DENY ─────────► Is this a consent-gated tool?
+                           (residual policy would permit
+                            if user_consent were true)
                                   │
                            ┌──────┴──────┐
                            │             │
@@ -220,7 +224,9 @@ Cedar evaluates request
                            │             │
                            ▼             ▼
                      return Deny    return Interrupt
-                  (install_package)      │
+                   (no permit at    (residual permit exists,
+                    all — e.g.       but user_consent missing)
+                    install_package)      │
                                          ▼
                               InterventionRegistry
                               calls event.interrupt()
