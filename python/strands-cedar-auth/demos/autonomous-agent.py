@@ -34,6 +34,10 @@ Requires: pip install cedarpy strands-agents
     + a model provider configured (default: Bedrock with Claude)
 """
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from strands import Agent, tool
 from cedar_auth_plugin import CedarAuthPlugin
 

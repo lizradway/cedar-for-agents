@@ -4,6 +4,10 @@ The verifier generates a Cedar schema from tool definitions and validates
 policies against it. No model or agent runtime needed.
 """
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from cedar_policy_verifier import CedarPolicyVerifier
 
 # -- Tool definitions (same format as Strands inputSchema["json"]) ----------

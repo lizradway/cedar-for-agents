@@ -34,7 +34,7 @@
 | **Datadog AI Guardrails** | ML-based content guardrails that score agent outputs for hallucination, toxicity, and PII leakage. Not identity-aware. |
 | **Steering plugins** | Strands plugins that guide agent behavior via LLM-based evaluation (Proceed / Guide / Interrupt). Content-aware, not identity-aware. |
 | **`invocation_state`** | A dict passed to a Strands agent on every call. Flows through the entire lifecycle — hooks and tools can read it. Used by the Cedar plugin to carry user identity. |
-| **`cedarpy`** | Rust-backed Python bindings for Cedar policy evaluation. Provides in-process, zero-network, microsecond-latency policy evaluation. |
+| **`cedarpy`** | Rust-backed Python bindings wrapping the official `cedar-policy` crate. Externally maintained. Used for in-process policy evaluation (zero-network, microsecond latency). |
 | **Principal** | In Cedar, the entity performing the action — typically the end user, but can also be a service, IAM role, or agent. |
 | **MCP** | Model Context Protocol — a standard for describing tools that AI models can call. The `cedar-for-agents` repo includes MCP-focused schema generation. |
 
@@ -43,14 +43,15 @@
 
 ## Problem
 
-AI agents invoke tools on behalf of users, but today there is no standard way to control *which* user can invoke *which* tool. Developers either hard-code permission checks inside each tool or skip per-tool auth entirely. This leads to authorization logic that is scattered, hard to audit, and impossible to analyze statically. As agents gain access to higher-stakes tools (database writes, API calls, file deletion), the gap between "what the model can do" and "what the user is allowed to do" becomes a security liability. No other agent framework offers a production-grade authorization story out of the box. This isn't a theoretical gap — the Strands community is [actively asking how to handle it](https://www.reddit.com/r/AI_Agents/comments/1rc4f8k/how_are_you_guys_handling_security_for_strands/), with practitioners converging on the same conclusion: "the model proposes, the system enforces."
+AI agents invoke tools on behalf of users, but today there is no standard way to control *which* user can invoke *which* tool. Developers either hard-code permission checks inside each tool or skip per-tool auth entirely. This leads to authorization logic that is scattered, hard to audit, and impossible to analyze statically. As agents gain access to higher-stakes tools (database writes, API calls, file deletion), the gap between "what the model can do" and "what the user is allowed to do" becomes a security liability. AWS research identifies that "access controls weren't continuously validated while the agent was running" as a root cause of cascading agent failures [[3]](#appendix-k-references). No other agent framework offers a production-grade authorization story out of the box. This isn't a theoretical gap — the Strands community is [actively asking how to handle it](https://www.reddit.com/r/AI_Agents/comments/1rc4f8k/how_are_you_guys_handling_security_for_strands/), with practitioners converging on the same conclusion: "the model proposes, the system enforces."
 
-Two examples where this surfaces today:
+Three examples where this surfaces today:
 
-- **Autonomous agents with powerful credentials** — An agent with a GitHub PAT or IAM role makes autonomous tool-call decisions. Prompt instructions are the only guardrail, and the LLM can ignore them. See [`DEMO_WALKTHROUGH.md`](./DEMO_WALKTHROUGH.md) for a real-world audit.
-- **Multi-user agents sharing one deployment** — One agent serves many users with different roles through the same credentials. IAM and API gateways can't distinguish who triggered which tool call. See [`DEMO_SAAS_WALKTHROUGH.md`](./DEMO_SAAS_WALKTHROUGH.md) for a worked example.
+- **Autonomous agents with powerful credentials** — An agent with a GitHub PAT or IAM role makes autonomous tool-call decisions. Prompt instructions are the only guardrail, and the LLM can ignore them. See [`DEMO_WALKTHROUGH.md`](./demos/DEMO_WALKTHROUGH.md) for a real-world audit.
+- **Multi-user agents sharing one deployment** — One agent serves many users with different roles through the same credentials. IAM and API gateways can't distinguish who triggered which tool call. See [`DEMO_SAAS_WALKTHROUGH.md`](./demos/DEMO_SAAS_WALKTHROUGH.md) for a worked example.
+- **Tools that need human consent** — High-stakes tools (send email, delete file) should pause for approval before executing. Products like Kiro and Claude Code hardcode permission categories in application code, but the model can't be customized per user or context without code changes. Cedar externalizes this into policy. See [`DEMO_CONSENT_WALKTHROUGH.md`](./demos/DEMO_CONSENT_WALKTHROUGH.md) for a worked example.
 
-Most agents today are single-user, but the trajectory is clear: as agents move to production deployments serving many users, tool-level authorization becomes a hard requirement. Starting with single-user guardrails today doesn't require rearchitecting when you add multi-user support later.
+Most agents today are single-user, but even in the single-user case, you don't want the agent to have the full permissions of the user it's acting on behalf of — you want it to have the *least* permissions required for the task at hand [[4]](#appendix-k-references). Cedar enforces this before you ever get to multi-tenancy. As agents move to production deployments serving many users, tool-level authorization becomes a hard requirement. Starting with single-user guardrails today doesn't require rearchitecting when you add multi-user support later.
 
 ### Why Not Just Create Different Agents With Different Tool Sets?
 
@@ -94,7 +95,7 @@ With tool-set swapping, the person writing the API router / agent factory is enc
 - **Permissions aren't versionable as a standalone artifact** — they're scattered across constructors and if-statements
 - **No static analysis** — you can't ask "which roles can reach `delete_record`?" without tracing through your code
 
-Cedar makes permissions a **separate artifact** — a `.cedar` file, a `.toml` config, or a `.json` file that security teams can read, review, and analyze without understanding your Python codebase. This is the same reason web apps use authorization middleware instead of hard-coding `if user.role == "admin"` in every route handler.
+Cedar makes permissions a **separate artifact** — a `.cedar` file, a `.toml` config, or a `.json` file that security teams can read, review, and analyze without understanding your Python codebase. This is the same reason web apps use authorization middleware instead of hard-coding `if user.role == "admin"` in every route handler. AWS enterprise guidance recommends exactly this: "make policy part of the agent's shape, not a gate at the end" and enforce it "at the tool level, not just in the agent's prompt" [[4]](#appendix-k-references).
 
 #### 5. One policy set for many principals
 
@@ -168,7 +169,7 @@ Each layer has a blind spot that the others can't cover. IAM doesn't know about 
 
 Every action an agent takes — AWS API call, internal service request, database query, file operation, third-party SaaS call, shell command — flows through the tool-call loop. It's the one point where you know: *who* is the user, *what* tool is being called, *with what arguments*, and *in what context* (time, environment, how many times this session).
 
-This is what the plugin hooks into. It's the equivalent of middleware in a web framework — every request passes through it, and you can enforce policy uniformly without scattering auth checks across every handler.
+This is what the plugin hooks into. It's the equivalent of middleware in a web framework — every request passes through it, and you can enforce policy uniformly without scattering auth checks across every handler. Amazon Bedrock AgentCore Policy enforces the same pattern at the managed infrastructure layer — Cedar policies evaluated at the gateway before every tool execution [[6, 7]](#appendix-k-references). This plugin brings that same model into the framework itself.
 
 Without it, you have two choices:
 
@@ -191,7 +192,7 @@ The plugin exists for the gap between "my API has auth" and "the agent is making
 
 ## Proposal
 
-**`CedarAuthPlugin`** is a Cedar-native Strands plugin that uses the [Cedar policy language](https://github.com/cedar-policy/cedar) to enforce fine-grained, auditable authorization over every tool call an agent makes. Cedar is purpose-built for authorization: it is fast (bounded-latency evaluation), analyzable (automated reasoning can prove policy properties), and expressive enough to cover RBAC, ABAC, and ReBAC models in a single policy set.
+**`CedarAuthPlugin`** is a Cedar-native Strands plugin that uses the [Cedar policy language](https://github.com/cedar-policy/cedar) to enforce fine-grained, auditable authorization over every tool call an agent makes. Cedar is purpose-built for authorization: it is fast (bounded-latency evaluation), analyzable (automated reasoning can prove policy properties [[1, 2]](#appendix-k-references)), and expressive enough to cover RBAC, ABAC, and ReBAC models in a single policy set.
 
 ### How It Works
 
@@ -238,9 +239,11 @@ The plugin reads `event.invocation_state` inside `BeforeToolCallEvent`, construc
 
 #### Why Cedar
 
-Cedar is purpose-built for authorization — `principal`, `action`, `resource`, and `context` are language primitives, not conventions. It provides formal verification (prove policy properties mathematically), bounded-latency evaluation (no recursion, no loops), and a natural path to AWS-managed authorization via Amazon Verified Permissions. We evaluated OPA/Rego as the main alternative; see [Appendix I](#appendix-i-cedar-vs-opa) for the full comparison. The plugin architecture is engine-agnostic, so an OPA plugin is feasible as a community contribution or something we build ourselves if there's demand.
+Cedar is purpose-built for authorization — `principal`, `action`, `resource`, and `context` are language primitives, not conventions. It provides formal verification ([automated reasoning](https://aws.amazon.com/what-is/automated-reasoning/) [[1, 2]](#appendix-k-references) that can mathematically prove policy properties — e.g., "no intern can reach `delete_record` in production"), bounded-latency evaluation (no recursion, no loops), and a natural path to AWS-managed authorization via Amazon Verified Permissions. This is a key differentiator: Cedar gives you deterministic, formally verifiable behavior to balance the probabilistic nature of agentic decisions — and it's something OPA cannot offer. We evaluated OPA/Rego as the main alternative; see [Appendix I](#appendix-i-cedar-vs-opa) for the full comparison. The plugin architecture is engine-agnostic, so an OPA plugin is feasible as a community contribution or something we build ourselves if there's demand.
 
-The plugin evaluates policies locally via `cedarpy` (Rust-backed Python bindings) — in-process, zero-network, microsecond latency. Cedar's Rust core also compiles to WASM natively, so policies are directly portable to a TypeScript/WASM runtime. For future dynamic entity/policy loading (e.g., fetching from S3 or a database at evaluation time), [`cedar-local-agent`](https://github.com/cedar-policy/cedar-local-agent) provides a Rust crate with async pluggable provider traits and caching — a natural building block if we outgrow static policy loading. Building this plugin led to a further investigation into [agent middleware](./INTERVENTION_EXPLORATION.md) — a first-class pipeline in the Strands SDK where Cedar authorization, LLM steering, guardrails, and other control layers share a unified interface, ordered evaluation, and short-circuiting (e.g., Cedar denies in sub-ms and the expensive LLM steering call never runs). The same pattern as HTTP middleware, adapted for the agent lifecycle's multiple intercept points (before/after tool calls, before/after model calls).
+The plugin evaluates policies locally via [`cedarpy`](https://pypi.org/project/cedarpy/) (Rust-backed Python bindings wrapping the official `cedar-policy` crate) — in-process, zero-network, microsecond latency. `cedarpy` is externally maintained, not by the Cedar team; if it falls behind, it's a thin `pyo3` wrapper that's easy to fork, and we have a working WASI fallback (`cedar-wasm-eval`) that eliminates the dependency entirely. For future dynamic entity/policy loading, [`cedar-local-agent`](https://github.com/cedar-policy/cedar-local-agent) provides async pluggable provider traits and caching.
+
+Building this plugin led to a further investigation into [agent middleware](./INTERVENTION_EXPLORATION.md) — a first-class pipeline where Cedar authorization, LLM steering, guardrails, and other control layers share a unified interface, ordered evaluation, and short-circuiting (e.g., Cedar denies in sub-ms and the expensive LLM steering call never runs).
 
 #### Authorization Request
 
@@ -260,14 +263,14 @@ tool call: query_database(database="analytics")
 → action = Action::"use_tool::query_database"
 ```
 
-**Resource** — What the tool is acting on. By default, this is the tool itself (`Tool::"query_database"`). This works when policies are about **which tools** a role can use — which is most cases. For policies that reference the **specific thing** a tool targets (a particular record, an S3 bucket), a custom `resource_resolver` extracts domain objects from tool arguments. Most users won't need this — it's a Full Cedar feature. See [Appendix F](#appendix-f-resource-resolver-formats) for all supported formats.
+**Resource** — What the tool is acting on. By default, this is the tool itself (`Tool::"query_database"`). This works when policies are about **which tools** a role can use — which is most cases. Note that tool arguments (like which database, which record ID) are already auto-populated into **context** and available for policy conditions — you don't need a custom resource to gate on argument values. The `resource_resolver` is only needed when you want Cedar *resource-level* policies (e.g., `resource.owner == principal` for ownership checks on domain objects like `Record::"42"`). Most users won't need this — it's a Full Cedar feature. See [Appendix F](#appendix-f-resource-resolver-formats) for all supported formats.
 
 **Context** — Everything Cedar needs to make conditional decisions. The plugin builds this from three sources:
 
 **1. Tool arguments** — copied directly from the model's tool call. If the model calls `query_database(database="analytics", mode="read_only")`, both `database` and `mode` appear in context. This is how Cedar policies can gate based on *how* a tool is used, not just *whether* it's called.
 
 **2. Time enrichments** — the plugin adds these automatically on every request:
-- `hour_utc` — current hour (0–23), for time-window policies
+- `hour_utc` — current hour (0–23), for time-window policies. Note: Cedar has a native [`datetime` extension](https://www.cedarpolicy.com/blog/datetime-extension) with operators to extract hours, minutes, etc. A future version could use Cedar's built-in datetime type directly instead of pre-computing `hour_utc` as an integer.
 - `timestamp` — ISO 8601 timestamp, for audit trails
 
 **3. State enrichments** — added when the relevant builder methods are used:
@@ -315,6 +318,7 @@ Because Cedar policies are analyzable, the plugin exposes a **`CedarPolicyVerifi
 - **Reachability**: "Can any principal invoke `delete_record` in production?" — catches overly permissive policies.
 - **Completeness**: "Does every tool have at least one permit path?" — catches forgotten policies for new tools.
 - **Redundancy**: "Does policy X shadow policy Y?" — finds policies that have no effect.
+- **Partial evaluation** (future): Cedar can evaluate requests with missing context and return [residual policies](https://docs.cedarpolicy.com/overview/terminology.html#partial-evaluation) — the conditions that must still hold. This could power smarter `Interrupt` responses (e.g., "I need your department before I can authorize this query").
 
 See [Appendix G](#appendix-g-verifier-api-and-cicd-integration) for the full verifier API and CI/CD examples.
 
@@ -476,13 +480,15 @@ See [Appendix H](#appendix-h-full-cedar-examples) for detailed examples of file 
 
 The plugin belongs in the [`cedar-for-agents`](https://github.com/cedar-policy/cedar-for-agents) repo as `python/strands-cedar-auth/`. The repo exists for "software at the intersection of Cedar and agents" — today it has MCP-focused Rust and JS packages; this adds runtime authorization for a Python agent framework. The package is installable standalone (`pip install strands-cedar-auth`) and depends on `cedarpy` and `strands-agents`.
 
-All demos run with `pip install cedarpy strands-agents`. See [`DEMO_WALKTHROUGH.md`](./DEMO_WALKTHROUGH.md) and [`DEMO_SAAS_WALKTHROUGH.md`](./DEMO_SAAS_WALKTHROUGH.md) for worked examples.
+Several other projects already use Cedar for agent authorization, including Amazon Bedrock AgentCore Policy and Leash by StrongDM.
+
+All demos run with `pip install cedarpy strands-agents`. See [`DEMO_WALKTHROUGH.md`](./demos/DEMO_WALKTHROUGH.md) (autonomous agent guardrails), [`DEMO_SAAS_WALKTHROUGH.md`](./demos/DEMO_SAAS_WALKTHROUGH.md) (multi-user SaaS), and [`DEMO_CONSENT_WALKTHROUGH.md`](./demos/DEMO_CONSENT_WALKTHROUGH.md) (tool consent — allow/deny/requires-approval) for worked examples.
 
 <details>
 <summary><strong>Appendix A: Key Design Decisions</strong></summary>
 
 - **Three entry points**: Builder (common constraints) → Config file (TOML/JSON-driven) → full Cedar (anything). Each entry point generates Cedar under the hood, so policies are always auditable.
-- **Builder generates Cedar policies**: Each `.restrict()`, `.rate_limit()`, `.time_window()`, `.deny_tools_in_env()` call generates the corresponding `forbid(...)` Cedar policy. The customer never writes Cedar syntax, but it's all Cedar underneath.
+- **Builder generates Cedar policies**: Cedar is default-deny (like IAM) — nothing is allowed unless a policy explicitly permits it. The `.role()` method generates the broad `permit` policy for that role, and each `.restrict()`, `.rate_limit()`, `.time_window()`, `.deny_tools_in_env()` call layers a `forbid(...)` policy on top. One risk: if a `forbid` policy is malformed, Cedar skips it during evaluation, which means you fail open for that constraint. The authorization response includes info about skipped policies, so the plugin should check for and surface these.
 - **Plugin tracks stateful constraints**: Rate limits require counters. Cedar is stateless, so the plugin maintains call counts per session and passes the count as `context.session_call_count` into each Cedar evaluation. Cedar evaluates the threshold; the plugin manages the state. Session ID resolution falls back through `session_id` → `user_id` → `"_default"` (via `_get_session_id()`).
 - **`cancel_tool`**: On denial, the plugin sets `event.cancel_tool` with a human-readable message. The model sees this as a tool error and can explain the denial to the user (confirmed working in the autonomous-agent and SaaS demos with a real model).
 - **Action naming**: `Action::"use_tool::{tool_name}"` — one Cedar action per tool, auto-derived from the tool's name.
@@ -584,6 +590,8 @@ forbid (
 ```
 
 Cedar does **not** implement the approval workflow — it doesn't pause execution, notify a manager, and wait. The plugin (or a broader system) must detect the denial, trigger an out-of-band approval request, and re-invoke with `context.has_manager_approval = true` on approval. Cedar handles the **decision**; additional infrastructure handles the **workflow**.
+
+Worth noting: Cedar supports [partial evaluation](https://docs.cedarpolicy.com/auth/partial-evaluation.html) [[5]](#appendix-k-references), which returns a *residual policy* when some context is missing at evaluation time. For the approval case, Cedar could return "this request would be allowed *if* `has_manager_approval` is true" — telling you exactly what additional context is needed. This maps naturally to an **Interrupt** action (pause for human input, then re-evaluate with the missing context).
 
 **Summary of the pattern**: Plugin gathers runtime state → passes it as Cedar context → Cedar evaluates → returns Allow/Deny. For simple context (time, environment flags), this is clean. For stateful context (counters, approval status), the plugin carries more weight and Cedar's role is primarily making thresholds configurable via policy.
 
@@ -898,5 +906,20 @@ forbid (
 | `.rate_limit("send_email", max_per_session=3)` | `forbid (...) when { context.session_call_count >= 3 };` (plugin tracks counter, passes it as context) |
 | `.time_window(9, 17)` | `forbid (...) when { context.hour_utc < 9 \|\| context.hour_utc >= 17 };` |
 | `.deny_tools_in_env("production", [...])` | `forbid (...) when { context.environment == "production" };` |
+
+</details>
+
+<details>
+<summary><strong>Appendix K: References</strong></summary>
+
+| # | Source | Relevance to this document |
+|---|--------|---------------------------|
+| 1 | [Cedar: A New Language for Expressive, Fast, Safe, and Analyzable Authorization](https://www.amazon.science/publications/cedar-a-new-language-for-expressive-fast-safe-and-analyzable-authorization) — Emina Torlak et al., Amazon | The original Cedar paper. Establishes the formal semantics, decidability guarantees, and machine-checked proofs (Lean 4) that underpin this plugin's "formally verifiable" claims. |
+| 2 | [How we built Cedar with automated reasoning and differential testing](https://www.amazon.science/blog/how-we-built-cedar-with-automated-reasoning-and-differential-testing) — Amazon Science, 2024 | Details the Lean formalization and differential random testing that prove Cedar's evaluator is correct — when it says Allow or Deny, that answer is mathematically sound. Backs up the verification section. |
+| 3 | [Can your governance keep pace with your AI ambitions? AI risk intelligence in the agentic era](https://aws.amazon.com/blogs/machine-learning/can-your-governance-keep-pace-with-your-ai-ambitions-ai-risk-intelligence-in-the-agentic-era/) — Dessertine-Panhard et al., AWS GenAI Innovation Center, 2026 | Identifies "access controls weren't continuously validated while the agent was running" as a root cause of cascading agent failures. Validates runtime per-tool-call authorization over static permission grants. |
+| 4 | [Agentic AI in the Enterprise Part 2: Guidance by Persona](https://aws.amazon.com/blogs/machine-learning/operationalizing-agentic-ai-part-2-a-stakeholders-guide/) — Bhasin & Elaprolu, AWS GenAI Innovation Center, 2026 | CISO guidance: treat agents like colleagues with non-human identities, per-tool audit trails, and policy enforcement "at the tool level, not just in the agent's prompt." Reads as a requirements doc for this plugin. |
+| 5 | [Introducing Cedar Analysis: Open Source Tools for Verifying Authorization Policies](https://aws.amazon.com/blogs/opensource/introducing-cedar-analysis-open-source-tools-for-verifying-authorization-policies/) — AWS Open Source Blog | Covers Cedar's policy analysis capabilities including partial evaluation (residual policies for missing context), which maps to the `Interrupt` action in our middleware model. |
+| 6 | [Secure AI agents with Policy in Amazon Bedrock AgentCore](https://aws.amazon.com/blogs/machine-learning/secure-ai-agents-with-policy-in-amazon-bedrock-agentcore/) — Srinivasan, Nadiminti & Dua, AWS, 2026 | The managed AWS implementation of Cedar-based agent authorization. Enforces Cedar policies at the AgentCore Gateway before tool execution — identity-scoped access, time-based restrictions, natural-language-to-Cedar generation. Validates the core pattern this plugin implements at the framework level: same principal/action/resource/context model, same default-deny + forbid-wins semantics, same separation of policy from agent code. |
+| 7 | [AI agents in enterprises: Best practices with Amazon Bedrock AgentCore](https://aws.amazon.com/blogs/machine-learning/ai-agents-in-enterprises-best-practices-with-amazon-bedrock-agentcore/) — Ladeira Tanke & Vasilakakis, AWS, 2026 | "Scale securely with personalization" describes the full auth flow: identity provider → OAuth claims → AgentCore Policy evaluates per-user/per-tool/per-parameter before execution. This is the managed infrastructure version of our framework-level plugin. The multi-agent section also validates `invocation_state` propagation across agent handoffs. |
 
 </details>

@@ -15,7 +15,7 @@
 
 ## Background: Existing Agent Control Layers
 
-Several independent tools already control agent behavior at runtime. Each is a Strands plugin (or could be), and each answers a different question.
+Several independent tools already control agent behavior at runtime. Each is a Strands plugin (or could be), and each answers a different question. At a high level, they fall into two categories: **operational guardrails** (Galileo Agent Control, Datadog AI Guard, content guardrails) that enforce rules about *what's happening* regardless of who's doing it, and **authorization** (Cedar) that enforces rules about *who's allowed to do what* — identity-aware, deterministic, and formally verifiable.
 
 ### Strands Steering
 
@@ -358,7 +358,7 @@ The pipeline registers one hook callback per event type, iterates handlers in or
 
 ```bash
 # Python
-pip install cedarpy strands-agents strands-agents-builder
+pip install cedarpy strands-agents
 python python/strands-cedar-auth/demos/intervention/pipeline.py
 
 # TypeScript
