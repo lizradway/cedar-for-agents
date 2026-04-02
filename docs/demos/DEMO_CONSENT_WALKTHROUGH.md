@@ -29,7 +29,7 @@ This works for a single product, but the permission model is baked into the clie
 
 ## How Cedar Resolves This
 
-Cedar models consent as a policy condition. A tool that requires approval has a `permit` policy gated on `context.user_consent == true`:
+Cedar models consent as a **residual policy** — a `permit` that would approve the request *if* `context.user_consent == true` were present. On the first evaluation, that context field is missing, so Cedar denies. But the handler knows a residual exists, so instead of hard-blocking, it fires a Strands **Interrupt** to pause execution and ask the human.
 
 ```cedar
 // Always allowed — no consent needed
@@ -39,7 +39,7 @@ permit(
   resource
 );
 
-// Requires consent — won't execute until the human approves
+// Requires consent — residual policy, gated on user_consent
 permit(
   principal in Role::"developer",
   action in [Action::"use_tool::send_email", Action::"use_tool::delete_file"],
@@ -51,20 +51,22 @@ permit(
 // install_package has no permit — always denied by Cedar default-deny
 ```
 
-When the model calls `send_email`, Cedar evaluates the request without `user_consent` in context. The policy doesn't match, so Cedar denies. But the plugin recognizes this is a consent-gated tool (not a hard deny), so instead of blocking it surfaces the tool call to the human:
+When the model calls `send_email`:
 
-```
-  ⚠ CONSENT REQUIRED  send_email
-    Args: {"to": "client@acme.com", "subject": "Q1 Report"}
-    Approve? [y/n]:
-```
+1. Cedar evaluates the request — `user_consent` is not in context, so the consent policy doesn't match. Cedar denies.
+2. The handler detects this is a consent-gated tool (a residual policy exists that *would* approve with consent).
+3. Instead of returning `Deny`, the handler returns `Interrupt` — one of the four [Intervention actions](../../docs/INTERVENTION_EXPLORATION.md) (Proceed / Deny / Guide / Interrupt).
+4. The `InterventionRegistry` maps `Interrupt` to `event.interrupt()` — the Strands SDK's built-in mechanism for pausing execution and requesting human input.
+5. The agent pauses and returns to the caller with `stop_reason == "interrupt"`. The caller prompts the human and resumes with their response.
+6. On resume, if the human approved, the tool executes. If denied, the tool call is cancelled.
 
-If the human approves, the plugin re-evaluates with `context.user_consent = true`. The policy matches, and the tool executes. If denied, the agent gets a rejection message and can adjust.
+This uses the existing `CedarAuthHandler` from the [native intervention demo](../../python/strands-cedar-auth/demos/intervention/native.py) with `.consent()` on its builder — no separate handler class. Consent is built into the Cedar intervention handler itself.
 
 The key properties:
 
 - **Configurable per tool, per role, per context.** An admin might not need consent for `delete_file`; an intern does. This is a policy change, not a code change.
 - **Composable with identity.** Consent policies layer on top of RBAC — a tool can require consent *and* be restricted to certain roles.
+- **Uses the SDK's interrupt system.** No raw `input()` calls — the handler returns `Interrupt`, the registry calls `event.interrupt()`, and the SDK's built-in interrupt/resume flow handles the rest.
 - **Auditable.** Every consent decision (approved, rejected, auto-allowed, hard-denied) is logged.
 - **Default-deny is the safety net.** A tool with no `permit` policy is always blocked — consent can't override a missing permission.
 
@@ -75,17 +77,33 @@ cd python/strands-cedar-auth
 python demos/consent.py
 ```
 
-The demo runs an interactive Strands agent with Cedar policies. You type natural language requests, and the agent calls tools. When a consent-gated tool fires, you're prompted to approve or deny in real time.
+The demo uses the existing `CedarAuthHandler` with `.consent()` on its builder, passed as an intervention:
+
+```python
+cedar = (
+    CedarAuthHandler.builder()
+    .role("developer", tools=["search", "read_file"])
+    .consent(tools=["send_email", "delete_file"])
+    .build()
+)
+
+agent = Agent(
+    tools=[search, read_file, send_email, delete_file, install_package],
+    interventions=[cedar],
+)
+```
+
+You type natural language requests, and the agent calls tools. When a consent-gated tool fires, the Strands interrupt system pauses execution and asks you to approve or deny.
 
 **Three permission levels:**
 
 | Level | Tools | What happens |
 |---|---|---|
 | Always allowed | `search`, `read_file` | Executes silently |
-| Requires consent | `send_email`, `delete_file` | Pauses, shows args, asks `[y/n]` |
+| Requires consent | `send_email`, `delete_file` | Interrupt pauses for approval |
 | Always denied | `install_package` | Hard block, no prompt |
 
-Requires `pip install cedarpy strands-agents` and a model provider configured (default: Bedrock with Claude). See [Appendix A](#appendix-a-example-session) for a full example session transcript.
+Requires `pip install cedarpy strands-agents` (interventions branch) and a model provider configured (default: Bedrock with Claude). See [Appendix A](#appendix-a-example-session) for a full example session transcript.
 
 ---
 
@@ -94,13 +112,13 @@ Requires `pip install cedarpy strands-agents` and a model provider configured (d
 
 ```
 ======================================================================
-Cedar Auth — Interactive Consent Demo
+Cedar Auth — Consent via Strands Interrupt
 ======================================================================
 
 Permission levels:
-  ALLOW     — search, read_file (no approval needed)
-  CONSENT   — send_email, delete_file (you'll be asked)
-  DENY      — install_package (hard block)
+  ALLOW     — search, read_file (Proceed)
+  CONSENT   — send_email, delete_file (Interrupt → y/n)
+  DENY      — install_package (Deny)
 
 You are: alice (role: developer)
 Type your request, or 'quit' to exit.
@@ -108,31 +126,25 @@ Type your request, or 'quit' to exit.
 
 You: Search for strands agents documentation
 
-  ✓ ALLOWED  search({"query": "strands agents documentation"})
-
 Agent: I found several results for "strands agents documentation"...
 
 You: Send an email to bob@acme.com about the quarterly results
 
-  ⚠ CONSENT REQUIRED  send_email
-    Args: {"to": "bob@acme.com", "subject": "Quarterly Results", "body": "..."}
+  ⚠ CONSENT REQUIRED
+    Tool 'send_email' requires your approval. Args: {"to": "bob@acme.com", ...}
     Approve? [y/n]: y
-  ✓ APPROVED  Proceeding with send_email
 
 Agent: I've sent the email to bob@acme.com with the quarterly results.
 
 You: Delete the file /tmp/old_data.csv
 
-  ⚠ CONSENT REQUIRED  delete_file
-    Args: {"path": "/tmp/old_data.csv"}
+  ⚠ CONSENT REQUIRED
+    Tool 'delete_file' requires your approval. Args: {"path": "/tmp/old_data.csv"}
     Approve? [y/n]: n
-  ✗ REJECTED  User denied consent for delete_file
 
 Agent: I wasn't able to delete that file — you denied the request.
 
 You: Install the requests package
-
-  ✗ DENIED   install_package — not authorized for this role
 
 Agent: I'm not authorized to install packages.
 
@@ -141,10 +153,10 @@ You: quit
 ======================================================================
 Audit Log
 ======================================================================
-  [   ALLOW] search
-  [APPROVED] send_email
-  [REJECTED] delete_file
-  [    DENY] install_package
+  [  PROCEED] search
+  [INTERRUPT] send_email
+  [INTERRUPT] delete_file
+  [     DENY] install_package
 ```
 
 </details>
@@ -163,6 +175,7 @@ permit(
 );
 
 // Requires consent — send_email and delete_file need human approval
+// This is the "residual policy" — gated on context.user_consent
 permit(
   principal in Role::"developer",
   action in [Action::"use_tool::send_email", Action::"use_tool::delete_file"],
@@ -192,12 +205,12 @@ Entities:
 Model calls a tool
        │
        ▼
-Plugin: BeforeToolCall
+CedarAuthHandler.evaluate()
        │
        ▼
 Cedar evaluates request
        │
-       ├── ALLOW ────────► Tool executes (search, read_file)
+       ├── ALLOW ────────► return Proceed ──► Tool executes
        │
        └── DENY ─────────► Is this a consent-gated tool?
                                   │
@@ -206,17 +219,26 @@ Cedar evaluates request
                           No            Yes
                            │             │
                            ▼             ▼
-                       Hard DENY    Prompt user: "Approve? [y/n]"
-                    (install_package)     │
+                     return Deny    return Interrupt
+                  (install_package)      │
+                                         ▼
+                              InterventionRegistry
+                              calls event.interrupt()
+                                         │
+                                         ▼
+                                  Agent pauses, returns
+                                  to caller with interrupts
+                                         │
+                                         ▼
+                                  Caller prompts human
+                                         │
                                   ┌──────┴──────┐
                                   │             │
                                  No            Yes
                                   │             │
                                   ▼             ▼
-                             cancel_tool   Re-evaluate with consent
-                            "User denied"       │
-                                                ▼
-                                          Tool executes
+                             cancel_tool   Tool executes
+                            "User denied"
 ```
 
 </details>

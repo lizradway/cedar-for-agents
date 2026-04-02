@@ -35,7 +35,7 @@ from typing import Any
 
 import cedarpy
 
-from strands import Agent, InterventionHandler, Proceed, Deny, Guide, tool
+from strands import Agent, InterventionHandler, Proceed, Deny, Guide, Interrupt, tool
 from strands.hooks.events import BeforeToolCallEvent
 
 
@@ -55,16 +55,18 @@ class CedarAuthHandler(InterventionHandler):
         return {BeforeToolCallEvent}
 
     def __init__(self, policies: str, base_entities: list[dict[str, Any]],
-                 principal_type: str = "User") -> None:
+                 principal_type: str = "User",
+                 consent_tools: set[str] | None = None) -> None:
         self.policies = policies
         self.base_entities = base_entities
         self.principal_type = principal_type
+        self.consent_tools = consent_tools or set()
 
     @classmethod
     def builder(cls) -> CedarAuthBuilder:
         return CedarAuthBuilder()
 
-    async def evaluate(self, event: BeforeToolCallEvent) -> Proceed | Deny:
+    async def evaluate(self, event: BeforeToolCallEvent) -> Proceed | Deny | Interrupt:
         user_id = event.invocation_state.get("user_id")
         roles = event.invocation_state.get("roles", [])
         environment = event.invocation_state.get("environment")
@@ -104,6 +106,13 @@ class CedarAuthHandler(InterventionHandler):
 
         if result.allowed:
             return Proceed(reason=f"{principal} authorized")
+
+        # Consent-gated: a residual policy exists that would approve with user_consent.
+        # Return Interrupt — the registry calls event.interrupt() outside its
+        # try/except, so InterruptException propagates correctly to the hook system.
+        if tool_name in self.consent_tools:
+            return Interrupt(prompt=f"Tool '{tool_name}' requires your approval. Args: {tool_input}")
+
         return Deny(reason=f"{principal} not authorized for '{tool_name}'")
 
 
@@ -159,6 +168,7 @@ class CedarAuthBuilder:
     def __init__(self) -> None:
         self._roles: dict[str, list[str]] = {}
         self._restrictions: list[dict[str, Any]] = []
+        self._consent_tools: dict[str, list[str]] = {}
         self._principal_type: str = "User"
 
     def role(self, name: str, tools: list[str]) -> CedarAuthBuilder:
@@ -169,11 +179,26 @@ class CedarAuthBuilder:
         self._restrictions.append({"tool": tool, "allowed_values": allowed_values, "for_role": for_role})
         return self
 
+    def consent(self, tools: list[str], for_role: str | None = None) -> CedarAuthBuilder:
+        """Require human consent before executing these tools.
+
+        Generates Cedar policies gated on `context.user_consent == true`.
+        At runtime, when Cedar denies because consent is missing, the handler
+        returns Interrupt instead of Deny — pausing for human input.
+        """
+        for tool in tools:
+            if tool not in self._consent_tools:
+                self._consent_tools[tool] = []
+            if for_role:
+                self._consent_tools[tool].append(for_role)
+        return self
+
     def build(self) -> CedarAuthHandler:
         return CedarAuthHandler(
             policies=self._generate_policies(),
             base_entities=self._generate_entities(),
             principal_type=self._principal_type,
+            consent_tools=set(self._consent_tools.keys()),
         )
 
     def _generate_policies(self) -> str:
@@ -194,6 +219,15 @@ class CedarAuthBuilder:
                     f'forbid (\n  {principal_clause},\n  action == Action::"use_tool::{tool_name}",\n'
                     f'  resource\n) when {{\n  !({conditions})\n}};'
                 )
+        # Consent-gated permits — only allowed when user_consent == true
+        for tool, roles in self._consent_tools.items():
+            target_roles = roles if roles else list(self._roles.keys())
+            for role in target_roles:
+                parts.append(
+                    f'permit (\n  principal in Role::"{role}",\n'
+                    f'  action == Action::"use_tool::{tool}",\n'
+                    f'  resource\n) when {{\n  context.user_consent == true\n}};'
+                )
         return "\n\n".join(parts)
 
     def _generate_entities(self) -> list[dict[str, Any]]:
@@ -206,6 +240,7 @@ class CedarAuthBuilder:
                 all_tools.update(tools)
         for r in self._restrictions:
             all_tools.add(r["tool"])
+        all_tools.update(self._consent_tools.keys())
         for t in all_tools:
             entities.append({"uid": {"type": "Tool", "id": t}, "parents": [], "attrs": {}})
         return entities

@@ -1,155 +1,54 @@
-"""Demo: Interactive tool consent — allow, deny, or ask the human.
+"""Demo: Interactive tool consent via Cedar + Strands Interrupt.
 
-A real Strands agent with Cedar policies that implement the same permission
-model as Kiro and Claude Code:
+Uses the existing CedarAuthHandler (the same intervention handler from the
+native intervention demo) with `.consent()` on its builder. No new handler
+class — consent is built into the Cedar handler itself.
 
-  - Always allowed:      search, read_file — executes silently
-  - Requires consent:    send_email, delete_file — pauses and asks you [y/n]
-  - Always denied:       install_package — hard block, no prompt
+When Cedar denies a consent-gated tool (because `user_consent` is missing
+from context), the handler returns `Interrupt`. The InterventionRegistry
+maps this to `event.interrupt()` which pauses the agent and returns
+control to the caller. The caller provides a y/n response, and the agent
+resumes — the handler runs again, sees the response, and re-evaluates
+Cedar with `user_consent = true`.
 
-When the model tries to call a consent-gated tool, the Cedar plugin detects
-the missing `user_consent` context, prompts you in the terminal, and either
-proceeds or blocks based on your response.
+  - Always allowed:      search, read_file — Proceed
+  - Requires consent:    send_email, delete_file — Interrupt → y/n → Proceed/Deny
+  - Always denied:       install_package — Deny
 
 Run:
     cd python/strands-cedar-auth
-    PYTHONPATH=. python demos/consent.py
+    python demos/consent.py
 
-Requires: pip install cedarpy strands-agents
+Requires: pip install cedarpy strands-agents (interventions branch)
     + a model provider configured (default: Bedrock with Claude)
 """
 
-import json
-import logging
+from __future__ import annotations
+
 import sys
-from collections import defaultdict
-from collections.abc import Callable
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import cedarpy
-
 from strands import Agent, tool
-from strands.hooks.events import BeforeToolCallEvent
-from strands.plugins.decorator import hook
-from strands.plugins.plugin import Plugin
 
-logger = logging.getLogger(__name__)
+# Import the existing CedarAuthHandler — same one used in intervention demos
+from demos.intervention.native import CedarAuthHandler
 
 # ---------------------------------------------------------------------------
-# 1. Cedar policies — three permission levels
+# 1. Build handler with consent support via the existing builder
 # ---------------------------------------------------------------------------
 
-POLICIES = """
-// Always allowed — search and read_file need no approval
-permit(
-  principal in Role::"developer",
-  action in [Action::"use_tool::search", Action::"use_tool::read_file"],
-  resource
-);
-
-// Requires consent — send_email and delete_file need human approval
-permit(
-  principal in Role::"developer",
-  action in [Action::"use_tool::send_email", Action::"use_tool::delete_file"],
-  resource
-) when {
-  context.user_consent == true
-};
-
-// install_package has no permit — always denied by Cedar default-deny
-"""
-
-ENTITIES = [
-    {"uid": {"type": "Role", "id": "developer"}, "parents": [], "attrs": {}},
-    {"uid": {"type": "User", "id": "alice"}, "parents": [{"type": "Role", "id": "developer"}], "attrs": {}},
-]
-
-# Tools that have a consent-gated permit policy
-CONSENT_TOOLS = {"send_email", "delete_file"}
-
+cedar = (
+    CedarAuthHandler.builder()
+    .role("developer", tools=["search", "read_file"])
+    .consent(tools=["send_email", "delete_file"])
+    # install_package has no permit and no consent — always Deny
+    .build()
+)
 
 # ---------------------------------------------------------------------------
-# 2. Plugin with interactive consent
-# ---------------------------------------------------------------------------
-
-class ConsentCedarPlugin(Plugin):
-    """Cedar auth plugin that prompts for human consent on gated tools."""
-
-    name = "cedar-consent"
-
-    def __init__(self) -> None:
-        self._audit: list[dict[str, Any]] = []
-        super().__init__()
-
-    def _evaluate(self, principal: str, tool_name: str, tool_input: dict[str, Any], consent: bool = False) -> bool:
-        context: dict[str, Any] = {
-            k: v for k, v in tool_input.items() if isinstance(v, (str, int, float, bool))
-        }
-        context["timestamp"] = datetime.now(timezone.utc).isoformat()
-        context["hour_utc"] = datetime.now(timezone.utc).hour
-        if consent:
-            context["user_consent"] = True
-
-        result = cedarpy.is_authorized(
-            request={
-                "principal": principal,
-                "action": f'Action::"use_tool::{tool_name}"',
-                "resource": f'Tool::"{tool_name}"',
-                "context": context,
-            },
-            policies=POLICIES,
-            entities=ENTITIES,
-        )
-        return result.allowed
-
-    @hook
-    def before_tool_call(self, event: BeforeToolCallEvent) -> None:
-        tool_name = event.tool_use.get("name", "unknown")
-        tool_input = event.tool_use.get("input", {})
-        principal = f'User::"{event.invocation_state.get("user_id", "unknown")}"'
-
-        # First pass: evaluate without consent
-        allowed = self._evaluate(principal, tool_name, tool_input, consent=False)
-
-        if allowed:
-            print(f"\n  \033[32m✓ ALLOWED\033[0m  {tool_name}({json.dumps(tool_input, indent=None)})")
-            self._audit.append({"tool": tool_name, "decision": "ALLOW"})
-            return
-
-        # Check if this is a consent-gated tool
-        if tool_name in CONSENT_TOOLS:
-            print(f"\n  \033[33m⚠ CONSENT REQUIRED\033[0m  {tool_name}")
-            print(f"    Args: {json.dumps(tool_input, indent=2)}")
-            response = input("    Approve? [y/n]: ").strip().lower()
-
-            if response == "y":
-                # Re-evaluate with consent
-                allowed = self._evaluate(principal, tool_name, tool_input, consent=True)
-                if allowed:
-                    print(f"  \033[32m✓ APPROVED\033[0m  Proceeding with {tool_name}")
-                    self._audit.append({"tool": tool_name, "decision": "APPROVED"})
-                    return
-
-            print(f"  \033[31m✗ REJECTED\033[0m  User denied consent for {tool_name}")
-            self._audit.append({"tool": tool_name, "decision": "REJECTED"})
-            event.cancel_tool = f"User denied consent for tool '{tool_name}'."
-            return
-
-        # Hard deny — not a consent tool, just unauthorized
-        print(f"\n  \033[31m✗ DENIED\033[0m   {tool_name} — not authorized for this role")
-        self._audit.append({"tool": tool_name, "decision": "DENY"})
-        event.cancel_tool = (
-            f"Access denied: not authorized to use tool '{tool_name}'. "
-            "No consent policy exists for this tool."
-        )
-
-
-# ---------------------------------------------------------------------------
-# 3. Tools
+# 2. Tools
 # ---------------------------------------------------------------------------
 
 @tool
@@ -183,30 +82,28 @@ def install_package(package: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 4. Agent
+# 3. Agent — Cedar handler passed as an intervention
 # ---------------------------------------------------------------------------
 
-plugin = ConsentCedarPlugin()
-
 agent = Agent(
-    plugins=[plugin],
     tools=[search, read_file, send_email, delete_file, install_package],
+    interventions=[cedar],
 )
 
 
 # ---------------------------------------------------------------------------
-# 5. Interactive loop
+# 4. Interactive loop
 # ---------------------------------------------------------------------------
 
 def main():
     print("=" * 70)
-    print("Cedar Auth — Interactive Consent Demo")
+    print("Cedar Auth — Consent via Strands Interrupt")
     print("=" * 70)
     print()
     print("Permission levels:")
-    print("  \033[32mALLOW\033[0m     — search, read_file (no approval needed)")
-    print("  \033[33mCONSENT\033[0m   — send_email, delete_file (you'll be asked)")
-    print("  \033[31mDENY\033[0m      — install_package (hard block)")
+    print("  \033[32mALLOW\033[0m     — search, read_file (Proceed)")
+    print("  \033[33mCONSENT\033[0m   — send_email, delete_file (Interrupt → y/n)")
+    print("  \033[31mDENY\033[0m      — install_package (Deny)")
     print()
     print("You are: alice (role: developer)")
     print("Type your request, or 'quit' to exit.")
@@ -226,19 +123,37 @@ def main():
 
         try:
             result = agent(user_input, invocation_state=state)
+
+            # Handle interrupts — the handler paused for consent
+            while result.stop_reason == "interrupt":
+                responses = []
+                for interrupt in result.interrupts:
+                    print(f"\n  \033[33m⚠ CONSENT REQUIRED\033[0m")
+                    print(f"    {interrupt.reason}")
+                    try:
+                        answer = input("    Approve? [y/n]: ").strip().lower()
+                    except (EOFError, KeyboardInterrupt):
+                        answer = "n"
+                    responses.append({
+                        "interruptResponse": {
+                            "interruptId": interrupt.id,
+                            "response": answer,
+                        }
+                    })
+                result = agent(responses, invocation_state=state)
+
             print(f"\n\033[1mAgent:\033[0m {result}")
         except Exception as e:
             print(f"\n\033[31mError:\033[0m {e}")
 
     # Print audit log
-    if plugin._audit:
+    if agent._intervention_registry:
         print(f"\n{'=' * 70}")
         print("Audit Log")
-        print(f"{'=' * 70}")
-        for entry in plugin._audit:
-            decision = entry["decision"]
-            color = {"ALLOW": "32", "APPROVED": "32", "REJECTED": "31", "DENY": "31"}.get(decision, "0")
-            print(f"  [\033[{color}m{decision:>8}\033[0m] {entry['tool']}")
+        print("=" * 70)
+        for r in agent._intervention_registry.audit_log:
+            color = {"PROCEED": "32", "INTERRUPT": "33", "DENY": "31"}.get(r.action_type, "0")
+            print(f"  [\033[{color}m{r.action_type:>9}\033[0m] {r.tool_name}")
 
 
 if __name__ == "__main__":
