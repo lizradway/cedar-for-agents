@@ -114,9 +114,12 @@ Separate plugins work for independent concerns that don't interact. Control laye
 
 Today, each control layer is a standalone plugin with no shared interface, no ordering guarantees, and no unified audit log:
 
-```python
-agent = Agent(plugins=[cedar_plugin, steering_plugin], tools=[...])
-# Cedar and steering fire independently — no way to skip steering when Cedar denies
+```typescript
+const agent = new Agent({
+    tools: [queryDatabase, sendEmail],
+    plugins: [cedarPlugin, steeringPlugin],
+    // Cedar and steering fire independently — no way to skip steering when Cedar denies
+})
 ```
 
 With interventions as a first-class parameter:
@@ -134,19 +137,12 @@ const agent = new Agent({
 
 The interface is **event-driven** — handlers declare which lifecycle events they care about, and the framework only calls them for matching events:
 
-```python
-class InterventionHandler(ABC):
-    @property
-    @abstractmethod
-    def name(self) -> str: ...
-
-    @abstractmethod
-    def handles(self) -> set[type]:
-        """Declare which Strands event types this handler cares about."""
-        ...
-
-    @abstractmethod
-    async def evaluate(self, event: HookEvent) -> InterventionAction: ...
+```typescript
+abstract class InterventionHandler {
+    abstract name: string;
+    abstract handles(): Set<EventType>;
+    abstract evaluate(event: HookEvent): Promise<InterventionAction>;
+}
 ```
 
 New event types can be supported without changing the base interface. For the rationale behind this design (vs. fixed methods per hook point), see [Appendix B](#appendix-b-interface-design-rationale).
@@ -156,11 +152,11 @@ New event types can be supported without changing the base interface. For the ra
 The framework provides an `InterventionRegistry` that wires handlers into the Strands hook system. It registers one callback per event type, dispatches to all matching handlers in registration order, and applies conflict resolution:
 
 - **Deny** short-circuits immediately — remaining handlers never run
-- **Guide** accumulates across handlers — all feedback is collected
+- **Guide** accumulates across handlers — feedback from all handlers is concatenated, then the tool is cancelled with the combined guidance so the agent can retry
 - **Interrupt** maps to `event.interrupt()` — the SDK's native pause/resume mechanism
 - **Proceed** continues to the next handler
 
-Every decision is logged to a unified audit trail accessible via `agent._intervention_registry.audit_log`.
+Every decision is logged to a unified audit trail accessible via `agent.interventionAuditLog`.
 
 ---
 
