@@ -76,24 +76,27 @@ The primitive has four components:
 
 Plugins communicate by mutating the event object. The framework sees the side effect but doesn't know what the plugin decided or why:
 
-```python
-# Plugin: mutates the event directly
-@hook
-def before_tool_call(self, event: BeforeToolCallEvent) -> None:
-    if not self._is_authorized(event):
-        event.cancel_tool = "Access denied"  # deny? guide? interrupt? framework can't tell
+```typescript
+// Plugin: mutates the event directly
+beforeToolCall(event: BeforeToolCallEvent): void {
+    if (!this.isAuthorized(event)) {
+        event.cancelTool = "Access denied"  // deny? guide? interrupt? framework can't tell
+    }
+}
 ```
 
 An intervention handler returns a typed decision instead. The framework owns what happens next:
 
-```python
-# Four possible decisions — the shared vocabulary across all handlers
-InterventionAction = Proceed | Deny | Guide | Interrupt
+```typescript
+// Four possible decisions — the shared vocabulary across all handlers
+type InterventionAction = Proceed | Deny | Guide | Interrupt
 
-# Intervention handler: returns a decision, framework applies it
-async def evaluate(self, event: BeforeToolCallEvent) -> InterventionAction:
-    if not self._is_authorized(event):
-        return Deny(reason="User not authorized for this tool")
+// Intervention handler: returns a decision, framework applies it
+async evaluate(event: BeforeToolCallEvent): Promise<InterventionAction> {
+    if (!this.isAuthorized(event)) {
+        return new Deny("User not authorized for this tool")
+    }
+}
 ```
 
 That distinction — returning a decision vs. mutating the event — is what makes the rest possible:
@@ -140,9 +143,12 @@ const agent = new Agent({
 The interface is **event-driven** — handlers declare which lifecycle events they care about, and the framework only calls them for matching events:
 
 ```typescript
+// The four possible decisions
+type InterventionAction = Proceed | Deny | Guide | Interrupt;
+
 abstract class InterventionHandler {
     abstract name: string;
-    abstract handles(): Set<EventType>;
+    abstract handles(): Set<typeof HookEvent>;  // e.g. BeforeToolCallEvent, AfterModelCallEvent
     abstract evaluate(event: HookEvent): Promise<InterventionAction>;
 }
 ```
@@ -392,12 +398,13 @@ agent = Agent(tools=[search, send_email], plugins=[blocker, guide])
 
 The obvious alternative is one method per lifecycle event:
 
-```python
-class InterventionHandler(ABC):
-    async def evaluate_tool_call(self, ctx: ToolCallContext) -> InterventionAction: ...
-    async def evaluate_model_input(self, ctx: ModelInputContext) -> InterventionAction: ...
-    async def evaluate_model_output(self, ctx: ModelOutputContext) -> InterventionAction: ...
-    async def evaluate_tool_result(self, ctx: ToolResultContext) -> InterventionAction: ...
+```typescript
+abstract class InterventionHandler {
+    abstract evaluateToolCall(ctx: ToolCallContext): Promise<InterventionAction>;
+    abstract evaluateModelInput(ctx: ModelInputContext): Promise<InterventionAction>;
+    abstract evaluateModelOutput(ctx: ModelOutputContext): Promise<InterventionAction>;
+    abstract evaluateToolResult(ctx: ToolResultContext): Promise<InterventionAction>;
+}
 ```
 
 **Today, Strands has 7+ lifecycle events.** That's 7 methods on the base class, most of which any handler ignores (Cedar uses 1, Datadog uses 4). When Strands adds new events, every handler needs updating — even if they don't care.
