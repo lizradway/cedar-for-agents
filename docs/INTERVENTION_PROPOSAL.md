@@ -133,6 +133,8 @@ const agent = new Agent({
 
 **Why first-class?** The framework owns composition — ordering, short-circuiting (Cedar denies in sub-ms, steering never runs), conflict resolution, and a unified audit log are all built in. Steering becomes one instance of `InterventionHandler`, not a special concept.
 
+**Backwards compatibility:** Since the intervention primitive is being built in TypeScript first, and the existing control layers (steering, Galileo Agent Control, Datadog AI Guard) only exist in Python, there is no migration path — these will be implemented from scratch as `InterventionHandler` instances in TypeScript. The existing Python plugins continue to work unchanged for Python users. When Strands Python 2.0 ships with WASM bindings, the TypeScript intervention handlers become available in Python, and the Python-only plugins can be retired.
+
 ### The `InterventionHandler` Interface
 
 The interface is **event-driven** — handlers declare which lifecycle events they care about, and the framework only calls them for matching events:
