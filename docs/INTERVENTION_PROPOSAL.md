@@ -47,9 +47,9 @@ This proposal elevates the shared structure behind these control layers into a f
 
 ## The Insight: Intervention Is the Primitive
 
-Several independent tools already control agent behavior at runtime — [steering](https://strandsagents.com/docs/user-guide/concepts/plugins/steering/), [Galileo Agent Control](https://strandsagents.com/docs/community/plugins/agent-control/), [Datadog AI Guard](https://strandsagents.com/docs/community/plugins/datadog-ai-guard/), with [Cedar](https://www.cedarpolicy.com/) and [OPA](https://www.openpolicyagent.org/) authorization planned. They fall into two categories: **operational guardrails** (Galileo, Datadog, content guardrails) that enforce rules about *what's happening* regardless of who's doing it, and **authorization** (Cedar, OPA) that enforces rules about *who's allowed to do what*. See [Appendix A](#appendix-a-concrete-instances) for a detailed breakdown of each.
+Several independent tools already control agent behavior at runtime — [steering](https://strandsagents.com/docs/user-guide/concepts/plugins/steering/), [Galileo Agent Control](https://strandsagents.com/docs/community/plugins/agent-control/), [Datadog AI Guard](https://strandsagents.com/docs/community/plugins/datadog-ai-guard/), with [Cedar](https://www.cedarpolicy.com/) and [OPA](https://www.openpolicyagent.org/) authorization planned. They fall into two categories: **operational guardrails** (Galileo, Datadog, content guardrails) that enforce rules about *what's happening* regardless of who's doing it, and **authorization** (Cedar, OPA) that enforces rules about *who's allowed to do what*.
 
-They all answer different questions — but they share the same mechanical structure. They all: **intercept** an agent event, **evaluate** against rules, **decide** (proceed, redirect, or block), and **log** the decision. This shared lifecycle is the primitive — **Intervention**. Each control layer is an instance. See [Appendix A](#appendix-a-concrete-instances) for a detailed comparison of each.
+They all answer different questions — but they share the same mechanical structure. They all: **intercept** an agent event, **evaluate** against rules, **decide** (proceed, redirect, or block), and **log** the decision. This shared lifecycle is the primitive — **Intervention**. Each control layer is an instance. See [Appendix A](#appendix-a-concrete-instances) for a detailed breakdown of each.
 
 The primitive has four components:
 
@@ -69,8 +69,6 @@ The primitive has four components:
 **Evaluation Engine** — Each instance uses a different engine (Cedar policies, LLM judge, API call, regex). The primitive doesn't prescribe how you evaluate, only what you return. See [Appendix A](#appendix-a-concrete-instances) for details on each.
 
 **Audit Trail** — Every handler logs its decision into a unified stream.
-
-Galileo's Agent Control is strong evidence this primitive is real — it independently arrived at the same deny-or-guide duality, but had to split it across two separate plugins (`AgentControlPlugin` for deny, `AgentControlSteeringHandler` for guide) because Strands lacks a unified intervention interface.
 
 ---
 
@@ -280,7 +278,7 @@ Since Strands Python 2.0 is moving to WASM bindings, the intervention primitive 
 |---|---|---|---|---|---|
 | **Question** | *Is this principal allowed?* | *Is this principal allowed?* | *Is this the right thing to do?* | *Is this content safe?* | *Does this violate a rule?* |
 | **Engine** | Cedar policies (native/WASM) | OPA/Rego (WASM) | LLM judge | Datadog API | Centralized rule server |
-| **Hook points** | `BeforeToolCall` | `BeforeToolCall` | `BeforeToolCall`, `AfterModelCall` | 4 events | 6+ events |
+| **Hook points** | `BeforeToolCall` | `BeforeToolCall` | `BeforeToolCall`, `AfterModelCall` | 4 events | 7 events |
 | **Latency** | Sub-ms | Sub-ms | 100ms+ | ms | ms |
 
 ### 1. Cedar Authorization
@@ -325,13 +323,14 @@ opa = OpaAuthHandler(
 
 ```
 Engine:      LLM with natural-language system prompt
-Actions:     Proceed | Guide | Interrupt
+Actions:     Proceed | Guide | Interrupt (tool steering)
+             Proceed | Guide (model steering)
 Posture:     Default-proceed
 Strength:    Flexible, handles ambiguous/subjective criteria
-Hook points: BeforeToolCall, AfterModelCall
+Hook points: BeforeToolCall (tool steering), AfterModelCall (model steering)
 ```
 
-The most flexible engine — anything you can express in language. Non-deterministic and high-latency. Best used last in the pipeline.
+The most flexible engine — anything you can express in language. Non-deterministic and high-latency. Best used last in the pipeline. Tool steering can Proceed, Guide (cancel + retry with feedback), or Interrupt (pause for human input). Model steering can Proceed (accept response) or Guide (discard response and retry with guidance injected into conversation).
 
 ```python
 from strands.vended_plugins.steering import LLMSteeringHandler
