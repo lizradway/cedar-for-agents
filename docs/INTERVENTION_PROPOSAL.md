@@ -90,7 +90,6 @@ An intervention handler returns a typed decision instead. The framework owns wha
 ```typescript
 // Four possible decisions — the shared vocabulary across all handlers
 type InterventionAction = Proceed | Deny | Guide | Interrupt
-
 // Intervention handler: returns a decision, framework applies it
 async evaluate(event: BeforeToolCallEvent): Promise<InterventionAction> {
     if (!this.isAuthorized(event)) {
@@ -143,9 +142,6 @@ const agent = new Agent({
 The interface is **event-driven** — handlers declare which lifecycle events they care about, and the framework only calls them for matching events:
 
 ```typescript
-// The four possible decisions
-type InterventionAction = Proceed | Deny | Guide | Interrupt;
-
 abstract class InterventionHandler {
     abstract name: string;
     abstract handles(): Set<typeof HookEvent>;  // e.g. BeforeToolCallEvent, AfterModelCallEvent
