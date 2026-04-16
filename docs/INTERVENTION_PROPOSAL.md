@@ -121,21 +121,10 @@ agent = Agent(plugins=[cedar_plugin, steering_plugin], tools=[...])
 
 With interventions as a first-class parameter:
 
-```python
-agent = Agent(
-    tools=[query_database, send_email],
-    interventions=[
-        cedar,        # sub-ms, formal policies
-        guardrails,   # sub-ms, pattern matching
-        steering,     # 100ms+, LLM-based guidance
-    ],
-)
-```
-
 ```typescript
 const agent = new Agent({
     tools: [queryDatabase, sendEmail],
-    interventions: [cedar, guardrails, steering],
+    interventions: [cedar, guardrails, steering],  // cheapest first
 })
 ```
 
