@@ -88,8 +88,6 @@ beforeToolCall(event: BeforeToolCallEvent): void {
 An intervention handler returns a typed decision instead. The framework owns what happens next:
 
 ```typescript
-// Four possible decisions — the shared vocabulary across all handlers
-type InterventionAction = Proceed | Deny | Guide | Interrupt
 // Intervention handler: returns a decision, framework applies it
 async evaluate(event: BeforeToolCallEvent): Promise<InterventionAction> {
     if (!this.isAuthorized(event)) {
