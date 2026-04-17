@@ -2,25 +2,14 @@
 
 ## Table of Contents
 
-- [Intervention: A First-Class Agent Control Primitive](#intervention-a-first-class-agent-control-primitive)
-  - [Table of Contents](#table-of-contents)
-  - [Problem](#problem)
-  - [Intervention Primitive](#intervention-primitive)
-  - [Why Not Separate Plugins?](#why-not-separate-plugins)
-  - [Proposed API](#proposed-api)
-    - [The `InterventionHandler` Interface](#the-interventionhandler-interface)
-    - [The `InterventionRegistry`](#the-interventionregistry)
-  - [How Handlers Compose](#how-handlers-compose)
-    - [Interrupt: Human-in-the-Loop](#interrupt-human-in-the-loop)
-  - [Demos](#demos)
-  - [Development Plan](#development-plan)
-    - [1. Cedar Authorization](#1-cedar-authorization)
-    - [2. OPA Authorization (proposed)](#2-opa-authorization-proposed)
-    - [3. LLM Steering (Strands built-in)](#3-llm-steering-strands-built-in)
-    - [4. Datadog AI Guard (Strands community plugin)](#4-datadog-ai-guard-strands-community-plugin)
-    - [5. Content Guardrails (custom rules)](#5-content-guardrails-custom-rules)
-    - [6. Galileo Agent Control (Strands community plugin)](#6-galileo-agent-control-strands-community-plugin)
-    - [7. Bedrock Guardrails (Strands built-in)](#7-bedrock-guardrails-strands-built-in)
+- [Problem](#problem)
+- [Intervention Primitive](#intervention-primitive)
+- [Why Not Separate Plugins?](#why-not-separate-plugins)
+- [Proposed API](#proposed-api)
+- [How Handlers Compose](#how-handlers-compose)
+- [Demos](#demos)
+- [Development Plan](#development-plan)
+- Appendices: [A (Concrete Instances)](#appendix-a-concrete-instances) · [B (Interface Design Rationale)](#appendix-b-interface-design-rationale) · [C (Why Not Just Hooks?)](#appendix-c-why-not-just-hooks) · [D (Coverage Matrix)](#appendix-d-coverage-matrix) · [E (Userland Workaround)](#appendix-e-userland-workaround) · [F (Naming)](#appendix-f-naming-alternatives)
 
 <details>
 <summary><h2>Definitions</h2></summary>
@@ -286,7 +275,7 @@ See [Appendix E](#appendix-e-userland-workaround) for the userland pipeline we b
 
 5. **Steering intervention handler.** Migrate the existing Python `SteeringHandler` to implement `InterventionHandler`.
 
-6. **Bedrock Guardrails intervention handler.** Move Bedrock Guardrails from the model provider layer onto the intervention primitive. This is the primary use case for the `Transform` action — Bedrock's `ANONYMIZED` response maps to `Transform` (redact PII and continue), `BLOCKED` maps to `Deny`.
+6. **Bedrock Guardrails intervention handler.** Move Bedrock Guardrails from the model provider layer onto the intervention primitive.
 
 7. **Cedar intervention handler.** Build the Cedar authorization handler using [`cedarpy`](https://pypi.org/project/cedarpy/) (externally maintained Rust-backed Python bindings). When Strands Python 2.0 moves to WASM bindings, this is replaced by the official `cedar-wasm` from step 3.
 
