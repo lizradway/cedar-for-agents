@@ -2,14 +2,25 @@
 
 ## Table of Contents
 
-- [Problem](#problem)
-- [Intervention Primitive](#intervention-primitive)
-- [Why Not Separate Plugins?](#why-not-separate-plugins)
-- [Proposed API](#proposed-api)
-- [How Handlers Compose](#how-handlers-compose)
-- [Demos](#demos)
-- [Development Plan](#development-plan)
-- Appendices: [A (Concrete Instances)](#appendix-a-concrete-instances) · [B (Interface Design Rationale)](#appendix-b-interface-design-rationale) · [C (Why Not Just Hooks?)](#appendix-c-why-not-just-hooks) · [D (Coverage Matrix)](#appendix-d-coverage-matrix) · [E (Userland Workaround)](#appendix-e-userland-workaround) · [F (Naming)](#appendix-f-naming-alternatives)
+- [Intervention: A First-Class Agent Control Primitive](#intervention-a-first-class-agent-control-primitive)
+  - [Table of Contents](#table-of-contents)
+  - [Problem](#problem)
+  - [Intervention Primitive](#intervention-primitive)
+  - [Why Not Separate Plugins?](#why-not-separate-plugins)
+  - [Proposed API](#proposed-api)
+    - [The `InterventionHandler` Interface](#the-interventionhandler-interface)
+    - [The `InterventionRegistry`](#the-interventionregistry)
+  - [How Handlers Compose](#how-handlers-compose)
+    - [Interrupt: Human-in-the-Loop](#interrupt-human-in-the-loop)
+  - [Demos](#demos)
+  - [Development Plan](#development-plan)
+    - [1. Cedar Authorization](#1-cedar-authorization)
+    - [2. OPA Authorization (proposed)](#2-opa-authorization-proposed)
+    - [3. LLM Steering (Strands built-in)](#3-llm-steering-strands-built-in)
+    - [4. Datadog AI Guard (Strands community plugin)](#4-datadog-ai-guard-strands-community-plugin)
+    - [5. Content Guardrails (custom rules)](#5-content-guardrails-custom-rules)
+    - [6. Galileo Agent Control (Strands community plugin)](#6-galileo-agent-control-strands-community-plugin)
+    - [7. Bedrock Guardrails (Strands built-in)](#7-bedrock-guardrails-strands-built-in)
 
 <details>
 <summary><h2>Definitions</h2></summary>
@@ -56,7 +67,7 @@ The primitive has four components:
 
 **Events** — Typed event subclasses (`BeforeToolCallEvent`, `AfterModelCallEvent`, etc.) carry relevant context. Handlers only receive events they registered for.
 
-**Action** — Four decisions:
+**Action** — Five decisions:
 
 | Action | Meaning |
 |--------|---------|
@@ -64,11 +75,11 @@ The primitive has four components:
 | **Deny** | Hard block, no retry |
 | **Guide** | Cancel + feedback for retry |
 | **Interrupt** | Pause for human input |
-| **Transform** | Modify content and continue (future) |
+| **Transform** | Modify content and continue |
 
 **Deny** is new — steering today only has Proceed/Guide/Interrupt. Authorization needs a hard block that means "you are not allowed, period."
 
-**Transform** is proposed for cases where content needs modification rather than blocking — the primary use case is Bedrock Guardrails' `ANONYMIZED` action (PII redaction). The handler returns the modified content as data — the framework applies it, then continues the pipeline. Later handlers see the transformed content, not the original. Today this redaction logic is embedded inside the Bedrock model provider; making it an intervention handler pulls it into the control layer where it composes with everything else.
+**Transform** handles cases where content needs modification rather than blocking — the primary use case is Bedrock Guardrails' `ANONYMIZED` action (PII redaction). The handler returns the modified content as data — the framework applies it, then continues the pipeline. Later handlers see the transformed content, not the original. Today this redaction logic is embedded inside the Bedrock model provider; making it an intervention handler pulls it into the control layer where it composes with everything else.
 
 **Evaluation Engine** — Each instance uses a different engine (Cedar policies, LLM judge, API call, regex). The primitive doesn't prescribe how you evaluate, only what you return. See [Appendix A](#appendix-a-concrete-instances) for details on each.
 
@@ -137,7 +148,7 @@ const agent = new Agent({
 
 **Why first-class?** The framework owns composition — ordering, short-circuiting, conflict resolution, and a unified audit log are all built in. Steering becomes one instance of `InterventionHandler`, not a special concept.
 
-**Backwards compatibility:** The intervention primitive will be implemented in both Python 1.0 and TypeScript 1.0 concurrently. Existing Python plugins (steering, Galileo Agent Control, Datadog AI Guard) continue to work unchanged — interventions are additive. Existing control layers can be migrated to `InterventionHandler` instances incrementally.
+**Backwards compatibility:** The intervention primitive will be implemented in TypeScript first, then Python. Existing Python plugins (steering, Galileo Agent Control, Datadog AI Guard) continue to work unchanged — interventions are additive. Existing control layers will be migrated to `InterventionHandler` instances incrementally (see [Development Plan](#development-plan)).
 
 ### The `InterventionHandler` Interface
 
@@ -261,17 +272,25 @@ See [Appendix E](#appendix-e-userland-workaround) for the userland pipeline we b
 
 ## Development Plan
 
-1. **Cedar authorization plugin (Python, third-party).** Ship a `CedarAuthPlugin` as a third-party Strands plugin in the [`cedar-for-agents`](https://github.com/cedar-policy/cedar-for-agents) repo using [`cedarpy`](https://pypi.org/project/cedarpy/) (externally maintained Rust-backed Python bindings, not by the Cedar team). This validates the authorization model and gives us a concrete RFC for the intervention primitive. See the [Cedar Authorization design doc](https://github.com/strands-agents/docs/designs/0006-cedar-authorization.md).
+**TypeScript (first):**
 
-2. **Intervention primitive (Python + TypeScript).** Implement `InterventionHandler`, `InterventionAction`, and `InterventionRegistry` in both the Python and TypeScript SDKs concurrently — the `Agent(interventions=[...])` parameter proposed in this doc.
+1. **Intervention primitive.** Implement `InterventionHandler`, `InterventionAction` (including `Transform`), and `InterventionRegistry` in the TypeScript SDK — the `Agent({ interventions: [...] })` parameter proposed in this doc.
 
-3. **Cedar intervention handler (Python + TypeScript).** Build the Cedar authorization handler as an `InterventionHandler` on top of the primitive from step 2. Python uses [`cedarpy`](https://pypi.org/project/cedarpy/); TypeScript uses [`cedar-wasm`](https://github.com/cedar-policy/cedar/tree/main/cedar-wasm) (official WASM bindings maintained by the Cedar team).
+2. **Steering intervention handler.** Implement steering as an `InterventionHandler`. This is the first handler on the primitive and validates the interface design.
 
-4. **Steering intervention handler (Python + TypeScript).** Migrate the existing Python `SteeringHandler` to implement `InterventionHandler`. Implement steering in TypeScript as a native intervention handler rather than a special-cased plugin.
+3. **Cedar intervention handler.** Build the Cedar authorization handler using [`cedar-wasm`](https://github.com/cedar-policy/cedar/tree/main/cedar-wasm) — the official WASM bindings maintained by the Cedar team.
 
-5. **Additional intervention handlers.** Add other handlers (content guardrails, OPA, etc.) as needed based on demand.
+**Python (second):**
 
-When Strands Python 2.0 moves to WASM bindings, the TypeScript `cedar-wasm` handler becomes available in Python, replacing the `cedarpy` dependency with official Cedar WASM bindings.
+4. **Intervention primitive.** Port `InterventionHandler`, `InterventionAction`, and `InterventionRegistry` to the Python SDK.
+
+5. **Steering intervention handler.** Migrate the existing Python `SteeringHandler` to implement `InterventionHandler`.
+
+6. **Bedrock Guardrails intervention handler.** Move Bedrock Guardrails from the model provider layer onto the intervention primitive. This is the primary use case for the `Transform` action — Bedrock's `ANONYMIZED` response maps to `Transform` (redact PII and continue), `BLOCKED` maps to `Deny`.
+
+7. **Cedar intervention handler.** Build the Cedar authorization handler using [`cedarpy`](https://pypi.org/project/cedarpy/) (externally maintained Rust-backed Python bindings). When Strands Python 2.0 moves to WASM bindings, this is replaced by the official `cedar-wasm` from step 3.
+
+**Additional handlers** (content guardrails, OPA, etc.) added as needed based on demand.
 
 ---
 
