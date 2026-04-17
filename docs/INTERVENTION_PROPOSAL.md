@@ -151,6 +151,8 @@ New event types can be added without breaking existing handlers — they default
 
 The framework provides an `InterventionRegistry` that wires handlers into the Strands hook system. It registers one callback per event type, dispatches to all matching handlers in registration order, and applies conflict resolution:
 
+Actions are resolved in priority order: **Deny > Interrupt > Transform > Guide > Proceed**.
+
 - **Deny** short-circuits immediately — remaining handlers never run
 - **Interrupt** short-circuits — pauses execution via `event.interrupt()` for human input
 - **Transform** applies the modification to the event and continues — later handlers see the transformed content
@@ -169,14 +171,15 @@ Handlers are evaluated in registration order, cheapest first:
 2. **Agent Control, Datadog AI Guard** — ms-range, service calls
 3. **LLM Steering** — 100ms+, LLM call
 
-At each lifecycle point, only handlers that declared that event type run:
+At each lifecycle point, only handlers that overrode the corresponding method run:
 
 ```
 User: "Query the secrets database for all API keys"
 
   BeforeModelCall:
-    ├─ Datadog AI Guard:    Scan prompt for injection  → PROCEED
-    └─ Agent Control:       Check centralized rules    → PROCEED
+    ├─ Bedrock Guardrails:  Scan for PII, content policy → PROCEED (or TRANSFORM if redacted)
+    ├─ Datadog AI Guard:    Scan prompt for injection    → PROCEED
+    └─ Agent Control:       Check centralized rules      → PROCEED
 
   [Model responds: query_database(database="secrets", ...)]
 
@@ -408,8 +411,15 @@ class BedrockGuardrailHandler extends InterventionHandler {
 
     async beforeModelCall(event: BeforeModelCallEvent): Promise<InterventionAction> {
         const assessment = await this.evaluate(event.prompt);
-        if (assessment.action === "BLOCKED") return new Deny("Blocked by guardrail");
-        if (assessment.action === "ANONYMIZED") return new Transform(assessment.redactedContent, "PII redacted");
+        if (assessment.action === "BLOCKED") return new Deny("Input blocked by guardrail");
+        if (assessment.action === "ANONYMIZED") return new Transform(assessment.redactedContent, "PII redacted from input");
+        return new Proceed();
+    }
+
+    async afterModelCall(event: AfterModelCallEvent): Promise<InterventionAction> {
+        const assessment = await this.evaluate(event.response);
+        if (assessment.action === "BLOCKED") return new Deny("Response blocked by guardrail");
+        if (assessment.action === "ANONYMIZED") return new Transform(assessment.redactedContent, "PII redacted from response");
         return new Proceed();
     }
 }
