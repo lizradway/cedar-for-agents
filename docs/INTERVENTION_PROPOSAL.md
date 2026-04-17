@@ -58,17 +58,13 @@ The primitive has four components:
 
 **Action** — Five decisions:
 
-| Action | Meaning |
-|--------|---------|
-| **Proceed** | Allow |
-| **Deny** | Hard block, no retry |
-| **Guide** | Cancel + feedback for retry |
-| **Interrupt** | Pause for human input |
-| **Transform** | Modify content and continue |
-
-**Deny** is new — steering today only has Proceed/Guide/Interrupt. Authorization needs a hard block that means "you are not allowed, period."
-
-**Transform** handles cases where content needs modification rather than blocking — the primary use case is Bedrock Guardrails' `ANONYMIZED` action (PII redaction). The handler returns the modified content as data — the framework applies it, then continues the pipeline. Later handlers see the transformed content, not the original. Today this redaction logic is embedded inside the Bedrock model provider; making it an intervention handler pulls it into the control layer where it composes with everything else.
+| Action | Meaning | Details |
+|--------|---------|---------|
+| **Proceed** | Allow | Tool executes or model response is accepted. |
+| **Deny** | Hard block, no retry | New action — steering today only has Proceed/Guide/Interrupt. Authorization needs a hard block that means "you are not allowed, period." |
+| **Guide** | Cancel + feedback for retry | Tool is cancelled, agent receives combined feedback from all handlers and retries with a different approach. |
+| **Interrupt** | Pause for human input | Agent pauses via the SDK's native interrupt system. Human responds, agent resumes. |
+| **Transform** | Modify content and continue | Handler returns modified content (e.g. Bedrock Guardrails redacting PII). Framework applies it, pipeline continues. Later handlers see the transformed content, not the original. |
 
 **Evaluation Engine** — Each instance uses a different engine (Cedar policies, LLM judge, API call, regex). The primitive doesn't prescribe how you evaluate, only what you return. See [Appendix A](#appendix-a-concrete-instances) for details on each.
 
