@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cedar-agent-policy-builder"
+version = "0.1.0"
+description = "Generate Cedar policies and entities for agent authorization from declarative configuration"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cedar_agent_policy_builder"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
